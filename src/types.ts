@@ -1,5 +1,7 @@
 export type AuthMethod = "password" | "token";
 
+export type NoteStyle = "classic" | "rich";
+
 export interface StoredProjectConfig {
   id: string;
   identifier: string;
@@ -17,6 +19,8 @@ export interface HulySyncSettings {
   workspace: string;
   targetFolder: string;
   syncIntervalMinutes: number;
+  noteStyle: NoteStyle;
+  useMetaBind: boolean;
   projects: StoredProjectConfig[];
   lastSyncAt: string | null;
 }
@@ -125,6 +129,8 @@ export const DEFAULT_SETTINGS: HulySyncSettings = {
   workspace: "",
   targetFolder: "huly",
   syncIntervalMinutes: 15,
+  noteStyle: "rich",
+  useMetaBind: true,
   projects: [],
   lastSyncAt: null,
 };

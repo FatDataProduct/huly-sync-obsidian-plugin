@@ -1,3 +1,7 @@
+/* ---------------------------------------------------------------------------
+   Settings tab
+   --------------------------------------------------------------------------- */
+
 .huly-sync-muted {
   color: var(--text-muted);
 }
@@ -19,4 +23,345 @@
 
 .huly-sync-progress-meta {
   margin-bottom: 18px;
+}
+
+/* ===================================================================
+   HULY LAYOUT SYSTEM — custom callout types
+   =================================================================== */
+
+/* -------------------------------------------------------------------
+   [!huly-layout]  —  CSS Grid container  (main 1fr + sidebar 300px)
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-layout"] {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0 0 4px 0 !important;
+}
+
+.callout[data-callout="huly-layout"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-layout"] > .callout-content {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 20px;
+  padding: 0;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .callout[data-callout="huly-layout"] > .callout-content {
+    grid-template-columns: 1fr;
+  }
+  .callout[data-callout="huly-layout"] > .callout-content > .callout[data-callout="huly-sidebar"] {
+    order: -1;
+  }
+}
+
+/* -------------------------------------------------------------------
+   [!huly-main]  —  transparent main content column
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-main"] {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.callout[data-callout="huly-main"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-main"] > .callout-content {
+  padding: 0;
+}
+
+.callout[data-callout="huly-main"] h3 {
+  margin-top: 0.2em;
+}
+
+.callout[data-callout="huly-main"] hr {
+  margin: 0.8em 0;
+  opacity: 0.35;
+}
+
+/* -------------------------------------------------------------------
+   [!huly-sidebar]  —  sticky metadata panel
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-sidebar"] {
+  background: var(--background-secondary) !important;
+  border: 1px solid var(--background-modifier-border) !important;
+  border-radius: 12px !important;
+  padding: 4px 0 !important;
+  margin: 0 !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06) !important;
+  position: sticky;
+  top: 12px;
+  align-self: start;
+}
+
+.callout[data-callout="huly-sidebar"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-sidebar"] > .callout-content {
+  padding: 0 16px;
+}
+
+.callout[data-callout="huly-sidebar"] h5 {
+  font-size: 0.78em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 12px 0 6px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.callout[data-callout="huly-sidebar"] > .callout-content > :first-child {
+  margin-top: 4px;
+}
+
+.callout[data-callout="huly-sidebar"] table {
+  margin: 0;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.callout[data-callout="huly-sidebar"] table thead {
+  display: none;
+}
+
+.callout[data-callout="huly-sidebar"] table td {
+  padding: 4px 4px;
+  border: none !important;
+  font-size: 0.9em;
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.callout[data-callout="huly-sidebar"] table td:first-child {
+  width: 105px;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 0.86em;
+}
+
+.callout[data-callout="huly-sidebar"] table tr {
+  border-bottom: none !important;
+}
+
+.callout[data-callout="huly-sidebar"] hr {
+  margin: 4px 0;
+  border-color: var(--background-modifier-border);
+  opacity: 0.35;
+}
+
+.callout[data-callout="huly-sidebar"] ul {
+  padding-left: 0;
+  list-style: none;
+  margin: 4px 0;
+}
+
+.callout[data-callout="huly-sidebar"] li {
+  padding: 3px 0;
+  font-size: 0.9em;
+}
+
+/* -------------------------------------------------------------------
+   [!huly-header]  —  status banner bar
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-header"] {
+  padding: 8px 16px !important;
+  border-radius: 10px !important;
+  margin: 0 0 12px 0 !important;
+  border: 1px solid var(--background-modifier-border) !important;
+  background: var(--background-secondary) !important;
+}
+
+.callout[data-callout="huly-header"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-header"] > .callout-content {
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  align-items: center;
+  font-size: 0.9em;
+}
+
+.callout[data-callout="huly-header"][data-callout-metadata~="danger"] {
+  border-left: 4px solid var(--color-red) !important;
+}
+.callout[data-callout="huly-header"][data-callout-metadata~="warning"] {
+  border-left: 4px solid var(--color-orange) !important;
+}
+.callout[data-callout="huly-header"][data-callout-metadata~="success"] {
+  border-left: 4px solid var(--color-green) !important;
+}
+.callout[data-callout="huly-header"][data-callout-metadata~="info"] {
+  border-left: 4px solid var(--interactive-accent) !important;
+}
+
+/* -------------------------------------------------------------------
+   [!huly-stats]  —  flex row of stat cards
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-stats"] {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0 0 12px 0 !important;
+}
+
+.callout[data-callout="huly-stats"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-stats"] > .callout-content {
+  display: flex;
+  gap: 10px;
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+/* -------------------------------------------------------------------
+   [!huly-stat]  —  individual stat card inside stats row
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-stat"] {
+  flex: 1 1 0;
+  min-width: 110px;
+  text-align: center;
+  border-radius: 10px !important;
+  padding: 10px 12px !important;
+  background: var(--background-secondary) !important;
+  border: 1px solid var(--background-modifier-border) !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.callout[data-callout="huly-stat"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-stat"] > .callout-content {
+  padding: 0;
+  font-size: 0.88em;
+}
+
+.callout[data-callout="huly-stat"] > .callout-content strong {
+  display: block;
+  font-size: 1.5em;
+  line-height: 1.3;
+}
+
+/* -------------------------------------------------------------------
+   [!huly-columns]  —  equal two-column flex
+   ------------------------------------------------------------------- */
+
+.callout[data-callout="huly-columns"] {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+}
+
+.callout[data-callout="huly-columns"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-columns"] > .callout-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 0;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .callout[data-callout="huly-columns"] > .callout-content {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* [!huly-col] — transparent column wrapper inside huly-columns */
+.callout[data-callout="huly-col"] {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.callout[data-callout="huly-col"] > .callout-title {
+  display: none !important;
+}
+
+.callout[data-callout="huly-col"] > .callout-content {
+  padding: 0;
+}
+
+/* ===================================================================
+   GENERAL CARD STYLES — scoped via cssclasses
+   =================================================================== */
+
+.huly-card .inline-title {
+  font-weight: 700;
+}
+
+.huly-card h1 {
+  border-bottom: none;
+  margin-bottom: 0.25em;
+}
+
+.huly-card hr {
+  margin: 1em 0;
+  border-color: var(--background-modifier-border);
+  opacity: 0.35;
+}
+
+/* Issue-type accent on sidebar */
+.huly-issue .callout[data-callout="huly-sidebar"] {
+  border-left: 4px solid var(--interactive-accent) !important;
+}
+
+/* Project accent */
+.huly-project .callout[data-callout="huly-sidebar"] {
+  border-left: 4px solid var(--color-purple) !important;
+}
+
+/* Component accent */
+.huly-component .callout[data-callout="huly-header"] {
+  border-left: 4px solid var(--color-cyan) !important;
+}
+
+/* Label badges inline */
+.huly-card code:not(.is-loaded):not([class*="language-"]) {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.82em;
+  background: var(--background-modifier-border);
+}
+
+/* Meta Bind view fields */
+.huly-card .mb-view {
+  font-weight: 500;
+}
+
+/* Comments — simple author/body blocks inside huly-main */
+.callout[data-callout="huly-main"] .huly-comment-sep {
+  opacity: 0.3;
 }
