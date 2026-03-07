@@ -62,6 +62,19 @@ huly/
 
 ## Installation
 
+### Via BRAT
+
+1. Install the `BRAT` plugin in Obsidian.
+2. Open `BRAT` settings.
+3. Choose `Add beta plugin`.
+4. Enter the repository:
+   ```text
+   FatDataProduct/huly-sync
+   ```
+5. Confirm installation and enable `Huly Sync`.
+
+BRAT installs the plugin from GitHub release assets, so use a tagged release rather than raw source code.
+
 ### From GitHub Releases
 
 1. Open the repository `Releases` page.
@@ -88,6 +101,7 @@ Then copy `manifest.json`, `main.js`, and `styles.css` into:
 - `CI` runs on every push to `main` and on every pull request.
 - `Release` runs when a git tag is pushed.
 - The release workflow builds the plugin and uploads `manifest.json`, `main.js`, `styles.css`, and a zip archive to GitHub Releases.
+- The uploaded release assets are compatible with BRAT installation.
 - The pushed tag must match the versions in both `package.json` and `manifest.json`.
 
 ## Development
