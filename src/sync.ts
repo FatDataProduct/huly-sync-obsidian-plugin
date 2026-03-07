@@ -68,6 +68,13 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
 }
 
+function compareStrings(left: string, right: string): number {
+  return left.localeCompare(right, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
 function withoutExtension(path: string): string {
   return path.replace(/\.md$/i, "");
 }
@@ -160,12 +167,14 @@ function humanFileSize(size: number): string {
 }
 
 function attachmentLinks(attachments: HulyAttachment[]): string[] {
-  return attachments.map((attachment) => {
-    const meta = [attachment.mimeType, humanFileSize(attachment.size)]
-      .filter((part) => part.trim().length > 0)
-      .join(", ");
-    return `[${attachment.name}](${attachment.url})${meta ? ` (${meta})` : ""}`;
-  });
+  return [...attachments]
+    .sort((left, right) => compareStrings(left.name, right.name))
+    .map((attachment) => {
+      const meta = [attachment.mimeType, humanFileSize(attachment.size)]
+        .filter((part) => part.trim().length > 0)
+        .join(", ");
+      return `[${attachment.name}](${attachment.url})${meta ? ` (${meta})` : ""}`;
+    });
 }
 
 function renderCommentsSection(comments: HulyComment[]): string[] {
@@ -176,21 +185,23 @@ function renderCommentsSection(comments: HulyComment[]): string[] {
   return [
     "## Comments",
     "",
-    ...comments.flatMap((comment, index) => {
-      const header = `### ${index + 1}. ${comment.authorName} - ${toIsoDate(comment.updatedAt) ?? "Unknown date"}`;
-      const attachmentSection =
-        comment.attachments.length > 0
-          ? ["", ...renderLinksSection("Attachments", attachmentLinks(comment.attachments))]
-          : [];
+    ...[...comments]
+      .sort((left, right) => left.createdAt - right.createdAt || left.updatedAt - right.updatedAt)
+      .flatMap((comment, index) => {
+        const header = `### ${index + 1}. ${comment.authorName} - ${toIsoDate(comment.updatedAt) ?? "Unknown date"}`;
+        const attachmentSection =
+          comment.attachments.length > 0
+            ? ["", ...renderLinksSection("Attachments", attachmentLinks(comment.attachments))]
+            : [];
 
-      return [
-        header,
-        "",
-        comment.body.trim() || "_Empty comment_",
-        ...attachmentSection,
-        "",
-      ];
-    }),
+        return [
+          header,
+          "",
+          comment.body.trim() || "_Empty comment_",
+          ...attachmentSection,
+          "",
+        ];
+      }),
   ];
 }
 
@@ -263,11 +274,13 @@ function parentIssueLinks(
   parents: HulyIssueParent[],
   issuePathsById: Map<string, string>,
 ): string[] {
-  return parents.map((parent) => {
-    const path = issuePathsById.get(parent.parentId);
-    const alias = `${parent.identifier} ${parent.title}`.trim();
-    return path ? wikilink(path, alias) : alias;
-  });
+  return [...parents]
+    .sort((left, right) => compareStrings(left.identifier, right.identifier))
+    .map((parent) => {
+      const path = issuePathsById.get(parent.parentId);
+      const alias = `${parent.identifier} ${parent.title}`.trim();
+      return path ? wikilink(path, alias) : alias;
+    });
 }
 
 function renderIssueNote(
@@ -277,13 +290,14 @@ function renderIssueNote(
   componentNoteLink: string | null,
   parentLinks: string[],
 ): string {
+  const sortedLabels = [...issue.labels].sort(compareStrings);
   const tags = unique([
     "huly",
     "huly/type/issue",
     projectTag(project),
     statusTag(issue.statusName),
     ...componentTag(issue.componentName),
-    ...labelTags(issue.labels),
+    ...labelTags(sortedLabels),
   ]);
 
   return [
@@ -306,7 +320,7 @@ function renderIssueNote(
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
-    yamlList("huly_labels", issue.labels),
+    yamlList("huly_labels", sortedLabels),
     yamlList("tags", tags),
     "---",
     "",
@@ -332,7 +346,7 @@ function renderIssueNote(
     `- Priority: ${issue.priority}`,
     `- Assignee: ${issue.assigneeName ?? "Unassigned"}`,
     `- Due date: ${toIsoDate(issue.dueDate) ?? "Not set"}`,
-    issue.labels.length > 0 ? `- Labels: ${issue.labels.join(", ")}` : "- Labels: None",
+    sortedLabels.length > 0 ? `- Labels: ${sortedLabels.join(", ")}` : "- Labels: None",
     "",
     "## Description",
     "",
@@ -365,6 +379,11 @@ async function ensureFolder(vault: Vault, path: string): Promise<void> {
 async function upsertFile(vault: Vault, path: string, content: string): Promise<void> {
   const existing = vault.getAbstractFileByPath(path);
   if (existing instanceof TFile) {
+    const currentContent = await vault.cachedRead(existing);
+    if (currentContent === content) {
+      return;
+    }
+
     await vault.modify(existing, content);
     return;
   }
@@ -450,18 +469,22 @@ export class VaultSyncService {
         await deleteFileIfExists(this.app.vault, legacyProjectNote);
       }
 
-      const componentLinks = projectComponents.map((component) =>
-        wikilink(
-          componentPathsById.get(component.id) ?? componentNotePath(rootFolder, project, component),
-          component.label,
-        ),
-      );
-      const issueLinks = projectIssues.map((issue) =>
-        wikilink(
-          issuePathsById.get(issue.id) ?? issueNotePath(rootFolder, project, issue),
-          `${issue.identifier} ${issue.title}`.trim(),
-        ),
-      );
+      const componentLinks = [...projectComponents]
+        .sort((left, right) => compareStrings(left.label, right.label))
+        .map((component) =>
+          wikilink(
+            componentPathsById.get(component.id) ?? componentNotePath(rootFolder, project, component),
+            component.label,
+          ),
+        );
+      const issueLinks = [...projectIssues]
+        .sort((left, right) => compareStrings(left.identifier, right.identifier))
+        .map((issue) =>
+          wikilink(
+            issuePathsById.get(issue.id) ?? issueNotePath(rootFolder, project, issue),
+            `${issue.identifier} ${issue.title}`.trim(),
+          ),
+        );
 
       await upsertFile(
         this.app.vault,
