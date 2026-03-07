@@ -8,6 +8,9 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Store each project in its own vault folder under a configurable root folder.
 - Sync project notes, components, and all project issues, including `Done` and `Canceled`.
 - Add Obsidian-friendly tags for project, status, component, and Huly labels.
+- Sync task due dates and expose them as frontmatter fields for Calendar/Dataview-friendly workflows.
+- Sync task estimation, reported time, remaining time, and detailed time reports.
+- Show project-level summaries for time spent, remaining work, and employee effort.
 - Support both `email + password` and `token` authentication.
 - Support custom Huly base URLs and workspace selection.
 - Pull attachments as links from issues, components, and comments.
@@ -36,9 +39,17 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Scheduled sync refreshes all synced issues for all selected projects.
 - Synced content is written under `huly/` by default.
 - Project notes use descriptive filenames like `PN Project Name.md`.
-- Issue and component notes include Huly metadata, labels, attachments, comments, and wikilinks.
+- Issue notes include due dates, time tracking, labels, attachments, comments, and wikilinks.
+- Project notes include task lists, deadline overviews, and time tracking summaries by employee.
 - Assignees and comment authors are rendered as nicknames when available.
 - Mobile compatibility is kept by using Obsidian Vault APIs and the browser WebSocket transport from the official Huly SDK.
+
+## Calendar and time tracking
+
+- Issue notes expose `due` in `YYYY-MM-DD` format and keep `huly_due_date` as the original ISO value.
+- This makes synced tasks easier to consume from Calendar-style plugins, Dataview tables, and other frontmatter-based workflows.
+- Time tracking fields include estimate, reported time, remaining time, and detailed time report entries when Huly provides them.
+- Project notes aggregate time reports by employee and show upcoming deadlines across project tasks.
 
 ## Vault layout
 

@@ -24,6 +24,7 @@ import type {
   HulyIssue,
   HulyIssueParent,
   HulyProject,
+  HulyTimeReport,
 } from "./types";
 import { mapLimit } from "./async";
 
@@ -37,6 +38,9 @@ type LookupIssue = {
   assignee: string | null;
   component: string | null;
   dueDate: number | null;
+  estimation: number;
+  remainingTime: number;
+  reportedTime: number;
   parents: Array<{
     parentId: string;
     identifier: string;
@@ -88,6 +92,15 @@ type LookupProject = {
   description?: string;
   members?: string[];
   owners?: string[];
+};
+
+type LookupTimeSpendReport = {
+  _id: string;
+  attachedTo: string;
+  employee: string | null;
+  date: number | null;
+  value: number;
+  description: string;
 };
 
 const tracker = (trackerModule as typeof trackerModule & { default?: typeof trackerModule })
@@ -295,6 +308,30 @@ async function resolveReadablePersonName(
   try {
     const person = await getPersonByPersonRef(client, personRef);
     return formatReadableName(person?.name);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveEmployeeName(
+  client: PlatformClient,
+  employeeRef: string | null | undefined,
+): Promise<string | null> {
+  if (!employeeRef) {
+    return null;
+  }
+
+  const readablePersonName = await resolveReadablePersonName(client, employeeRef);
+  if (readablePersonName) {
+    return readablePersonName;
+  }
+
+  try {
+    const employee = await client.findOne(contact.mixin.Employee, {
+      _id: employeeRef as never,
+      active: true,
+    });
+    return formatReadableName(employee?.name);
   } catch {
     return null;
   }
@@ -595,6 +632,7 @@ export class HulyApiClient {
             componentAttachments,
             labels,
             descriptions,
+            timeReports,
           ] = await Promise.all([
             issueIds.length
               ? client.findAll(
@@ -688,6 +726,24 @@ export class HulyApiClient {
                 return [issue._id, description] as const;
               }),
             ),
+            issueIds.length
+              ? client.findAll(
+                  tracker.class.TimeSpendReport,
+                  {
+                    attachedToClass: tracker.class.Issue,
+                    attachedTo: {
+                      $in: issueIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      date: SortingOrder.Descending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
           ]);
 
           const typedIssueComments = issueComments as unknown as LookupComment[];
@@ -780,6 +836,21 @@ export class HulyApiClient {
           );
           const authorNames = new Map(authorEntries);
 
+          const typedTimeReports = timeReports as unknown as LookupTimeSpendReport[];
+          const employeeRefs = Array.from(
+            new Set(
+              typedTimeReports
+                .map((report) => report.employee)
+                .filter((employeeRef): employeeRef is string => employeeRef !== null),
+            ),
+          );
+          const employeeEntries = await mapLimit(
+            employeeRefs,
+            AUTHOR_LOOKUP_CONCURRENCY,
+            async (employeeRef) => [employeeRef, await resolveEmployeeName(client, employeeRef)] as const,
+          );
+          const employeeNames = new Map(employeeEntries);
+
           const toCommentsMap = (
             items: LookupComment[],
             attachmentsByParent: Map<string, HulyAttachment[]>,
@@ -808,6 +879,19 @@ export class HulyApiClient {
             typedIssueComments,
             issueCommentAttachmentsByParent,
           );
+
+          const timeReportsByIssue = new Map<string, HulyTimeReport[]>();
+          for (const report of typedTimeReports) {
+            const existing = timeReportsByIssue.get(report.attachedTo) ?? [];
+            existing.push({
+              id: report._id,
+              employeeName: employeeNames.get(report.employee ?? "") ?? "Unknown employee",
+              date: report.date,
+              value: report.value,
+              description: report.description.trim(),
+            });
+            timeReportsByIssue.set(report.attachedTo, existing);
+          }
 
           const labelsByIssue = new Map<string, string[]>();
           for (const label of labels as unknown as LookupTagReference[]) {
@@ -860,10 +944,14 @@ export class HulyApiClient {
                 componentId: issue.component,
                 componentName,
                 dueDate: issue.dueDate,
+                estimation: issue.estimation,
+                remainingTime: issue.remainingTime,
+                reportedTime: issue.reportedTime,
                 labels: labelsByIssue.get(issue._id) ?? [],
                 parents,
                 attachments: issueAttachmentsByParent.get(issue._id) ?? [],
                 comments: issueCommentsByParent.get(issue._id) ?? [],
+                timeReports: timeReportsByIssue.get(issue._id) ?? [],
                 modifiedOn: issue.modifiedOn,
                 isClosed: isClosedStatus(issue.status),
               };

@@ -69,6 +69,14 @@ export interface HulyComment {
   attachments: HulyAttachment[];
 }
 
+export interface HulyTimeReport {
+  id: string;
+  employeeName: string;
+  date: number | null;
+  value: number;
+  description: string;
+}
+
 export interface HulyIssueParent {
   parentId: string;
   identifier: string;
@@ -91,10 +99,14 @@ export interface HulyIssue {
   componentId: string | null;
   componentName: string | null;
   dueDate: number | null;
+  estimation: number;
+  remainingTime: number;
+  reportedTime: number;
   labels: string[];
   parents: HulyIssueParent[];
   attachments: HulyAttachment[];
   comments: HulyComment[];
+  timeReports: HulyTimeReport[];
   modifiedOn: number;
   isClosed: boolean;
 }

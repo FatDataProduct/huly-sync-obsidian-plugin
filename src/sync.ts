@@ -12,6 +12,7 @@ import type {
   HulyIssue,
   HulyIssueParent,
   HulyProject,
+  HulyTimeReport,
   NoteStyle,
   SyncProgress,
   HulySyncSettings,
@@ -53,6 +54,10 @@ function toIsoDate(timestamp: number | null): string | null {
   return new Date(timestamp).toISOString();
 }
 
+function toDateOnlyString(timestamp: number | null): string | null {
+  return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
+}
+
 function yamlScalar(name: string, value: string | number | boolean | null): string {
   if (value === null) {
     return `${name}: null`;
@@ -69,6 +74,38 @@ function yamlList(name: string, values: string[]): string {
   return [name + ":", ...values.map((value) => `  - ${JSON.stringify(value)}`)].join(
     "\n",
   );
+}
+
+function formatDuration(duration: number | null | undefined): string {
+  if (duration === null || duration === undefined) {
+    return "Not set";
+  }
+
+  if (duration <= 0) {
+    return "0m";
+  }
+
+  const totalMinutes = Math.round(duration / 60000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+
+  if (days > 0) {
+    parts.push(`${days}d`);
+  }
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || parts.length === 0) {
+    parts.push(`${minutes}m`);
+  }
+
+  return parts.join(" ");
+}
+
+function formatDurationShort(duration: number): string {
+  return formatDuration(duration);
 }
 
 function unique(values: string[]): string[] {
@@ -212,6 +249,84 @@ function renderCommentsSection(comments: HulyComment[]): string[] {
   ];
 }
 
+type EmployeeTimeSummary = {
+  employeeName: string;
+  total: number;
+};
+
+function summarizeTimeReports(reports: HulyTimeReport[]): EmployeeTimeSummary[] {
+  const totals = new Map<string, number>();
+  for (const report of reports) {
+    const key = report.employeeName.trim() || "Unknown employee";
+    totals.set(key, (totals.get(key) ?? 0) + report.value);
+  }
+
+  return Array.from(totals.entries())
+    .map(([employeeName, total]) => ({ employeeName, total }))
+    .sort(
+      (left, right) =>
+        right.total - left.total || compareStrings(left.employeeName, right.employeeName),
+    );
+}
+
+function projectTimeSummary(issues: HulyIssue[]): EmployeeTimeSummary[] {
+  return summarizeTimeReports(issues.flatMap((issue) => issue.timeReports));
+}
+
+function sumIssueDurations(issues: HulyIssue[]) {
+  return issues.reduce(
+    (acc, issue) => {
+      acc.estimation += issue.estimation;
+      acc.reported += issue.reportedTime;
+      acc.remaining += issue.remainingTime;
+      return acc;
+    },
+    { estimation: 0, reported: 0, remaining: 0 },
+  );
+}
+
+function renderTimeSummaryLines(summary: EmployeeTimeSummary[], emptyText: string): string[] {
+  if (summary.length === 0) {
+    return [emptyText];
+  }
+
+  return summary.map((item) => `- ${item.employeeName}: ${formatDurationShort(item.total)}`);
+}
+
+function renderIssueTimeReportsSection(issue: HulyIssue, title = "## Time reports"): string[] {
+  const summary = summarizeTimeReports(issue.timeReports);
+  const lines = [
+    title,
+    "",
+    `- Estimate: ${formatDuration(issue.estimation)}`,
+    `- Time spent: ${formatDuration(issue.reportedTime)}`,
+    `- Remaining: ${formatDuration(issue.remainingTime)}`,
+    `- Due date: ${toDateOnlyString(issue.dueDate) ?? "Not set"}`,
+    "",
+    "### By employee",
+    "",
+    ...renderTimeSummaryLines(summary, "_No time reports_"),
+  ];
+
+  if (issue.timeReports.length > 0) {
+    lines.push("", "### Entries", "");
+    for (const report of [...issue.timeReports].sort((left, right) => {
+      const leftDate = left.date ?? 0;
+      const rightDate = right.date ?? 0;
+      return rightDate - leftDate || compareStrings(left.employeeName, right.employeeName);
+    })) {
+      const date = report.date ? formatReadableDatetime(report.date) : "Unknown date";
+      const description = report.description.trim() || "_No description_";
+      lines.push(
+        `- ${report.employeeName}: ${formatDurationShort(report.value)} on ${date}`,
+        `  - ${description}`,
+      );
+    }
+  }
+
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Rich template helpers
 // ---------------------------------------------------------------------------
@@ -286,6 +401,9 @@ function issueSidebarTemplate(): string {
     "| ⚡ **Priority** | `VIEW[{huly_priority_display}][text]` |",
     "| 👤 **Assignee** | `VIEW[{huly_assignee}][text]` |",
     "| 📅 **Due Date** | `VIEW[{huly_due_display}][text]` |",
+    "| ⏳ **Estimate** | `VIEW[{huly_estimation_display}][text]` |",
+    "| 🕒 **Spent** | `VIEW[{huly_reported_display}][text]` |",
+    "| ⌛ **Remaining** | `VIEW[{huly_remaining_display}][text]` |",
     "| 🏷️ **Labels** | `VIEW[{huly_labels_display}][text]` |",
     "| 🔄 **Updated** | `VIEW[{huly_updated_display}][text]` |",
     "",
@@ -356,6 +474,7 @@ async function writeTemplateFiles(vault: Vault, rootFolder: string): Promise<voi
 
 function renderRichProjectNote(
   project: HulyProject,
+  issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
   opts: NoteRenderOptions,
@@ -364,6 +483,8 @@ function renderRichProjectNote(
   const tasksFolder = projectTasksFolderPath(opts.rootFolder, project);
   const tplPath = withoutExtension(joinVaultPath(opts.rootFolder, "_templates/project_header"));
   const mb = opts.useMetaBind;
+  const totals = sumIssueDurations(issues);
+  const timeSummary = projectTimeSummary(issues);
 
   const lines: string[] = [
     "---",
@@ -374,6 +495,9 @@ function renderRichProjectNote(
     yamlScalar("huly_project_name", project.name),
     yamlScalar("huly_component_count", componentLinks.length),
     yamlScalar("huly_task_count", issueLinks.length),
+    yamlScalar("huly_total_estimation_ms", totals.estimation),
+    yamlScalar("huly_total_reported_time_ms", totals.reported),
+    yamlScalar("huly_total_remaining_time_ms", totals.remaining),
     yamlList("tags", tags),
     "---",
     "",
@@ -396,6 +520,10 @@ function renderRichProjectNote(
     "> > [!huly-stat]",
     "> > **" + project.identifier + "**",
     "> > 🆔 Identifier",
+    ">",
+    "> > [!huly-stat]",
+    `> > **${formatDurationShort(totals.reported)}**`,
+    "> > 🕒 Time Spent",
     "",
   );
 
@@ -450,12 +578,47 @@ function renderRichProjectNote(
     "> > TABLE WITHOUT ID",
     "> >   file.link AS \"Task\",",
     "> >   huly_status AS \"Status\",",
-    "> >   huly_priority AS \"Priority\"",
+    "> >   huly_priority AS \"Priority\",",
+    "> >   due AS \"Due\",",
+    "> >   huly_estimation_display AS \"Estimate\",",
+    "> >   huly_reported_display AS \"Spent\",",
+    "> >   huly_remaining_display AS \"Remaining\"",
     `> > FROM "${tasksFolder}"`,
-    "> > SORT huly_priority DESC",
+    "> > SORT due ASC, huly_priority DESC",
     "> > ```",
     "",
   );
+
+  lines.push(
+    "---",
+    "",
+    "## ⏱ Time Tracking",
+    "",
+    `- Total estimate: ${formatDuration(totals.estimation)}`,
+    `- Total time spent: ${formatDuration(totals.reported)}`,
+    `- Total remaining: ${formatDuration(totals.remaining)}`,
+    "",
+    "### By employee",
+    "",
+    ...renderTimeSummaryLines(timeSummary, "_No time reports_"),
+    "",
+    "### Upcoming deadlines",
+    "",
+  );
+
+  const upcomingDeadlines = [...issues]
+    .filter((issue) => issue.dueDate !== null)
+    .sort((left, right) => (left.dueDate ?? 0) - (right.dueDate ?? 0));
+  if (upcomingDeadlines.length === 0) {
+    lines.push("_No due dates_", "");
+  } else {
+    for (const issue of upcomingDeadlines.slice(0, 10)) {
+      lines.push(
+        `- ${issue.identifier} ${issue.title} :: ${toDateOnlyString(issue.dueDate)}`,
+      );
+    }
+    lines.push("");
+  }
 
   // -- Full task list fallback (in case Dataview is not installed) --
   lines.push(
@@ -545,13 +708,14 @@ function renderRichIssueNote(
   parentLinks: string[],
   opts: NoteRenderOptions,
 ): string {
+  const sortedLabels = [...issue.labels].sort(compareStrings);
   const tags = unique([
     "huly",
     "huly/type/issue",
     projectTag(project),
     statusTag(issue.statusName),
     ...componentTag(issue.componentName),
-    ...labelTags(issue.labels),
+    ...labelTags(sortedLabels),
   ]);
 
   const mb = opts.useMetaBind;
@@ -562,10 +726,13 @@ function renderRichIssueNote(
   const priorityDisp = `${pEmoji} ${issue.priority}`;
   const dueDisp = issue.dueDate !== null ? formatReadableDate(issue.dueDate) : "Not set";
   const updatedDisp = formatReadableDatetime(issue.modifiedOn);
-  const labelsDisp = issue.labels.length > 0 ? issue.labels.join(", ") : "None";
-  const labelsInline = issue.labels.length > 0
-    ? issue.labels.map((l) => `\`${l}\``).join(" ")
+  const labelsDisp = sortedLabels.length > 0 ? sortedLabels.join(", ") : "None";
+  const labelsInline = sortedLabels.length > 0
+    ? sortedLabels.map((l) => `\`${l}\``).join(" ")
     : "—";
+  const estimateDisp = formatDuration(issue.estimation);
+  const reportedDisp = formatDuration(issue.reportedTime);
+  const remainingDisp = formatDuration(issue.remainingTime);
 
   const componentDisplay = componentNoteLink && issue.componentName
     ? wikilink(componentNoteLink, issue.componentName)
@@ -589,13 +756,20 @@ function renderRichIssueNote(
     yamlScalar("huly_component", issue.componentName),
     yamlScalar("huly_component_note", componentNoteLink ? withoutExtension(componentNoteLink) : null),
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
+    yamlScalar("due", toDateOnlyString(issue.dueDate)),
+    yamlScalar("huly_estimation_ms", issue.estimation),
+    yamlScalar("huly_reported_time_ms", issue.reportedTime),
+    yamlScalar("huly_remaining_time_ms", issue.remainingTime),
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
-    yamlList("huly_labels", issue.labels),
+    yamlList("huly_labels", sortedLabels),
     // display properties for Meta Bind VIEW fields
     yamlScalar("huly_status_display", statusDisp),
     yamlScalar("huly_priority_display", priorityDisp),
     yamlScalar("huly_due_display", dueDisp),
+    yamlScalar("huly_estimation_display", estimateDisp),
+    yamlScalar("huly_reported_display", reportedDisp),
+    yamlScalar("huly_remaining_display", remainingDisp),
     yamlScalar("huly_updated_display", updatedDisp),
     yamlScalar("huly_labels_display", labelsDisp),
     yamlScalar("huly_project_link", projectLinkMd),
@@ -655,6 +829,38 @@ function renderRichIssueNote(
     }
   }
 
+  lines.push(L2(""), L2("---"), L2(""), L2("### ⏱ Time Tracking"), L2(""));
+  lines.push(
+    L2(`- Estimate: ${estimateDisp}`),
+    L2(`- Time spent: ${reportedDisp}`),
+    L2(`- Remaining: ${remainingDisp}`),
+    L2(`- Due date: ${toDateOnlyString(issue.dueDate) ?? "Not set"}`),
+  );
+
+  const reportSummary = summarizeTimeReports(issue.timeReports);
+  lines.push(L2(""), L2("#### By employee"), L2(""));
+  if (reportSummary.length === 0) {
+    lines.push(L2("_No time reports_"));
+  } else {
+    for (const item of reportSummary) {
+      lines.push(L2(`- ${item.employeeName}: ${formatDurationShort(item.total)}`));
+    }
+  }
+
+  if (issue.timeReports.length > 0) {
+    lines.push(L2(""), L2("#### Entries"), L2(""));
+    for (const report of [...issue.timeReports].sort((left, right) => {
+      const leftDate = left.date ?? 0;
+      const rightDate = right.date ?? 0;
+      return rightDate - leftDate || compareStrings(left.employeeName, right.employeeName);
+    })) {
+      const date = report.date ? formatReadableDatetime(report.date) : "Unknown date";
+      const description = report.description.trim() || "_No description_";
+      lines.push(L2(`- ${report.employeeName}: ${formatDurationShort(report.value)} on ${date}`));
+      lines.push(L2(`  - ${description}`));
+    }
+  }
+
   // Comments
   lines.push(L2(""), L2("---"), L2(""));
   if (issue.comments.length === 0) {
@@ -705,6 +911,9 @@ function renderRichIssueNote(
       L2(`| ⚡ **Priority** | ${priorityDisp} |`),
       L2(`| 👤 **Assignee** | ${issue.assigneeName ?? "Unassigned"} |`),
       L2(`| 📅 **Due Date** | ${dueDisp} |`),
+      L2(`| ⏳ **Estimate** | ${estimateDisp} |`),
+      L2(`| 🕒 **Spent** | ${reportedDisp} |`),
+      L2(`| ⌛ **Remaining** | ${remainingDisp} |`),
       L2(`| 🏷️ **Labels** | ${labelsInline} |`),
       L2(`| 🔄 **Updated** | ${updatedDisp} |`),
       L2(""),
@@ -766,22 +975,47 @@ function renderCommentsRich(comments: HulyComment[]): string[] {
 
 function renderProjectNote(
   project: HulyProject,
+  issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
 ): string {
   const tags = unique(["huly", "huly/type/project", projectTag(project)]);
+  const totals = sumIssueDurations(issues);
+  const timeSummary = projectTimeSummary(issues);
+  const dueIssues = [...issues]
+    .filter((issue) => issue.dueDate !== null)
+    .sort((left, right) => (left.dueDate ?? 0) - (right.dueDate ?? 0));
   const body = [
     "---",
     yamlScalar("huly_type", "project"),
     yamlScalar("huly_project_id", project.id),
     yamlScalar("huly_project_identifier", project.identifier),
     yamlScalar("huly_project_name", project.name),
+    yamlScalar("huly_total_estimation_ms", totals.estimation),
+    yamlScalar("huly_total_reported_time_ms", totals.reported),
+    yamlScalar("huly_total_remaining_time_ms", totals.remaining),
     yamlList("tags", tags),
     "---",
     "",
     `# ${project.identifier} ${project.name}`.trim(),
     "",
     project.description || "No project description.",
+    "",
+    "## Time Tracking",
+    "",
+    `- Total estimate: ${formatDuration(totals.estimation)}`,
+    `- Total time spent: ${formatDuration(totals.reported)}`,
+    `- Total remaining: ${formatDuration(totals.remaining)}`,
+    "",
+    "### By employee",
+    "",
+    ...renderTimeSummaryLines(timeSummary, "_No time reports_"),
+    "",
+    "## Upcoming deadlines",
+    "",
+    ...(dueIssues.length > 0
+      ? dueIssues.map((issue) => `- ${issue.identifier} ${issue.title} :: ${toDateOnlyString(issue.dueDate)}`)
+      : ["_No due dates_"]),
     "",
     ...renderLinksSection("## Components", componentLinks),
     "",
@@ -877,6 +1111,13 @@ function renderIssueNote(
       componentNoteLink ? withoutExtension(componentNoteLink) : null,
     ),
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
+    yamlScalar("due", toDateOnlyString(issue.dueDate)),
+    yamlScalar("huly_estimation_ms", issue.estimation),
+    yamlScalar("huly_reported_time_ms", issue.reportedTime),
+    yamlScalar("huly_remaining_time_ms", issue.remainingTime),
+    yamlScalar("huly_estimation_display", formatDuration(issue.estimation)),
+    yamlScalar("huly_reported_display", formatDuration(issue.reportedTime)),
+    yamlScalar("huly_remaining_display", formatDuration(issue.remainingTime)),
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
     yamlList("huly_labels", sortedLabels),
@@ -905,7 +1146,12 @@ function renderIssueNote(
     `- Priority: ${issue.priority}`,
     `- Assignee: ${issue.assigneeName ?? "Unassigned"}`,
     `- Due date: ${toIsoDate(issue.dueDate) ?? "Not set"}`,
+    `- Estimate: ${formatDuration(issue.estimation)}`,
+    `- Time spent: ${formatDuration(issue.reportedTime)}`,
+    `- Remaining: ${formatDuration(issue.remainingTime)}`,
     sortedLabels.length > 0 ? `- Labels: ${sortedLabels.join(", ")}` : "- Labels: None",
+    "",
+    ...renderIssueTimeReportsSection(issue),
     "",
     "## Description",
     "",
@@ -921,14 +1167,15 @@ function renderIssueNote(
 
 function dispatchProjectNote(
   project: HulyProject,
+  issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
   opts: NoteRenderOptions,
 ): string {
   if (opts.noteStyle === "rich") {
-    return renderRichProjectNote(project, componentLinks, issueLinks, opts);
+    return renderRichProjectNote(project, issues, componentLinks, issueLinks, opts);
   }
-  return renderProjectNote(project, componentLinks, issueLinks);
+  return renderProjectNote(project, issues, componentLinks, issueLinks);
 }
 
 function dispatchComponentNote(
@@ -1099,7 +1346,7 @@ export class VaultSyncService {
       await upsertFile(
         this.app.vault,
         projectNote,
-        dispatchProjectNote(project, componentLinks, issueLinks, renderOpts),
+        dispatchProjectNote(project, projectIssues, componentLinks, issueLinks, renderOpts),
       );
       completedWrites += 1;
       reportWriteProgress(`Project note: ${project.identifier}`);
