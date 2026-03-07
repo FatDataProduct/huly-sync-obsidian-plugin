@@ -51,6 +51,90 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Time tracking fields include estimate, reported time, remaining time, and detailed time report entries when Huly provides them.
 - Project notes aggregate time reports by employee and show upcoming deadlines across project tasks.
 
+## Compatible plugins
+
+The current calendar integration is frontmatter-based. `Huly Sync` does not create separate calendar event files, but it writes task dates into note properties that other Obsidian plugins can read.
+
+Recommended plugins:
+
+- `Dataview`:
+  Best overall fit. Works directly with the generated `due` field and project/task metadata.
+- `Tasks Calendar`:
+  Can be useful if your workflow is centered around task calendars and frontmatter/date properties.
+- `Full Calendar`:
+  Possible, but this is a more advanced option. It is better suited to dedicated event notes, so it is not the primary target for `Huly Sync`.
+
+Notes:
+
+- `Dataview` is the most natural companion plugin for the current implementation.
+- The official Obsidian `Calendar` plugin is not a direct task calendar integration here. It can still be useful alongside generated dashboard notes and Dataview queries.
+- The `Tasks` plugin is not the main integration target, because `Huly Sync` generates notes with frontmatter, not markdown checklist tasks.
+
+## Dataview examples
+
+### Calendar view of Huly tasks
+
+```dataview
+CALENDAR due
+FROM "huly"
+WHERE due
+```
+
+### Upcoming deadlines table
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Task,
+  huly_project_name AS Project,
+  huly_status AS Status,
+  due AS Due,
+  huly_assignee AS Assignee
+FROM "huly"
+WHERE due
+SORT due ASC
+```
+
+### Tasks with time tracking
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Task,
+  huly_estimation_display AS Estimate,
+  huly_reported_display AS Spent,
+  huly_remaining_display AS Remaining,
+  due AS Due
+FROM "huly"
+WHERE huly_type = "issue"
+SORT due ASC
+```
+
+### Overdue open tasks
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Task,
+  huly_project_name AS Project,
+  huly_status AS Status,
+  due AS Due
+FROM "huly"
+WHERE huly_type = "issue" AND due AND due < date(today) AND huly_is_closed = false
+SORT due ASC
+```
+
+### Time tracking by project folder
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Task,
+  huly_project_name AS Project,
+  huly_assignee AS Assignee,
+  huly_reported_display AS Spent,
+  huly_remaining_display AS Remaining
+FROM "huly/FDASR/tasks"
+WHERE huly_type = "issue"
+SORT huly_reported_time_ms DESC
+```
+
 ## Vault layout
 
 With the default target folder, synced content looks like this:
