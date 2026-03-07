@@ -13,6 +13,7 @@ import {
   DEFAULT_SETTINGS,
   type ConnectionConfig,
   type HulyProject,
+  type NoteStyle,
   type SyncProgress,
   type HulySyncSettings,
   type StoredProjectConfig,
@@ -390,6 +391,52 @@ class HulySyncSettingTab extends PluginSettingTab {
             await this.plugin.persistSettings();
           }),
       );
+
+    containerEl.createEl("h3", { text: "Note appearance" });
+
+    new Setting(containerEl)
+      .setName("Note style")
+      .setDesc(
+        "Classic: plain markdown. Rich: multi-layout with sidebar, stats cards, " +
+        "Dataview tables, Meta Bind widgets and visual status indicators.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("rich", "Rich (recommended)")
+          .addOption("classic", "Classic")
+          .setValue(this.plugin.settings.noteStyle ?? "rich")
+          .onChange(async (value) => {
+            this.plugin.settings.noteStyle = value as NoteStyle;
+            await this.plugin.persistSettings();
+            this.display();
+          }),
+      );
+
+    if ((this.plugin.settings.noteStyle ?? "rich") === "rich") {
+      new Setting(containerEl)
+        .setName("Use Meta Bind")
+        .setDesc(
+          "Enable Meta Bind embeds, VIEW fields and action buttons in notes. " +
+          "Requires the Meta Bind community plugin.",
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.useMetaBind ?? true)
+            .onChange(async (value) => {
+              this.plugin.settings.useMetaBind = value;
+              await this.plugin.persistSettings();
+            }),
+        );
+
+      containerEl.createEl("p", {
+        text: "Rich style recommended plugins: Meta Bind (interactive widgets), " +
+          "Dataview (live task tables in project dashboards). " +
+          "Install them from Settings \u2192 Community plugins \u2192 Browse.",
+        cls: "huly-sync-muted",
+      });
+    }
+
+    containerEl.createEl("h3", { text: "Connection" });
 
     new Setting(containerEl)
       .setName("Connection")

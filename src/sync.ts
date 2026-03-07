@@ -12,12 +12,19 @@ import type {
   HulyIssue,
   HulyIssueParent,
   HulyProject,
+  NoteStyle,
   SyncProgress,
   HulySyncSettings,
   SyncOptions,
   SyncStats,
 } from "./types";
 import { mapLimit } from "./async";
+
+interface NoteRenderOptions {
+  noteStyle: NoteStyle;
+  useMetaBind: boolean;
+  rootFolder: string;
+}
 
 const WRITE_CONCURRENCY = 8;
 
@@ -205,6 +212,558 @@ function renderCommentsSection(comments: HulyComment[]): string[] {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// Rich template helpers
+// ---------------------------------------------------------------------------
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function formatReadableDate(timestamp: number | null): string {
+  if (timestamp === null) return "—";
+  const d = new Date(timestamp);
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()}`;
+}
+
+function formatReadableDatetime(timestamp: number | null): string {
+  if (timestamp === null) return "—";
+  const d = new Date(timestamp);
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const m = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${d.getUTCFullYear()} ${h}:${m}`;
+}
+
+function priorityEmoji(priority: string, isClosed: boolean): string {
+  if (isClosed) return "✅";
+  switch (priority) {
+    case "Urgent": return "🔴";
+    case "High": return "🟠";
+    case "Medium": return "🟡";
+    case "Low": return "🟢";
+    default: return "⚪";
+  }
+}
+
+function statusDot(statusName: string): string {
+  const s = statusName.toLowerCase();
+  if (s.includes("done") || s.includes("cancel")) return "🟢";
+  if (s.includes("progress")) return "🔵";
+  if (s.includes("review")) return "🟣";
+  if (s.includes("todo")) return "🟡";
+  if (s.includes("backlog")) return "⚪";
+  return "🔘";
+}
+
+function issueHeaderVariant(priority: string, isClosed: boolean): string {
+  if (isClosed) return "success";
+  switch (priority) {
+    case "Urgent": return "danger";
+    case "High": return "warning";
+    default: return "info";
+  }
+}
+
+/** Prefix a line for level-2 callout nesting (> > ) */
+function L2(line: string): string {
+  return line === "" ? "> >" : `> > ${line}`;
+}
+
+/** Convert multi-line text into L2-prefixed lines */
+function contentToL2(content: string): string[] {
+  return content.split("\n").map(L2);
+}
+
+// ---------------------------------------------------------------------------
+// Template file content (Meta Bind embeds)
+// ---------------------------------------------------------------------------
+
+function issueSidebarTemplate(): string {
+  return [
+    "##### Details",
+    "",
+    "| | |",
+    "|:--|:--|",
+    "| 🔖 **Status** | `VIEW[{huly_status_display}][text]` |",
+    "| ⚡ **Priority** | `VIEW[{huly_priority_display}][text]` |",
+    "| 👤 **Assignee** | `VIEW[{huly_assignee}][text]` |",
+    "| 📅 **Due Date** | `VIEW[{huly_due_display}][text]` |",
+    "| 🏷️ **Labels** | `VIEW[{huly_labels_display}][text]` |",
+    "| 🔄 **Updated** | `VIEW[{huly_updated_display}][text]` |",
+    "",
+    "---",
+    "",
+    "##### Relations",
+    "",
+    "| | |",
+    "|:--|:--|",
+    "| 📂 **Project** | `VIEW[{huly_project_link}][text(renderMarkdown)]` |",
+    "| 🧩 **Component** | `VIEW[{huly_component_link}][text(renderMarkdown)]` |",
+    "| ⬆️ **Parent** | `VIEW[{huly_parent_link}][text(renderMarkdown)]` |",
+    "",
+    "---",
+    "",
+    "##### Actions",
+    "",
+    "```meta-bind-button",
+    "label: \"🔄 Sync Now\"",
+    "hidden: true",
+    "id: \"huly-sidebar-sync\"",
+    "style: primary",
+    "action:",
+    "  type: command",
+    "  command: huly-sync:huly-sync-run-manual",
+    "```",
+    "",
+    "`BUTTON[huly-sidebar-sync]`",
+  ].join("\n");
+}
+
+function projectHeaderTemplate(): string {
+  return [
+    "```meta-bind-button",
+    "label: \"🔄 Sync Now\"",
+    "hidden: true",
+    "id: \"huly-project-sync\"",
+    "style: primary",
+    "action:",
+    "  type: command",
+    "  command: huly-sync:huly-sync-run-manual",
+    "```",
+    "",
+    "```meta-bind-button",
+    "label: \"📥 Reload Projects\"",
+    "hidden: true",
+    "id: \"huly-reload\"",
+    "style: default",
+    "action:",
+    "  type: command",
+    "  command: huly-sync:huly-sync-refresh-projects",
+    "```",
+    "",
+    "`BUTTON[huly-project-sync, huly-reload]`",
+  ].join("\n");
+}
+
+async function writeTemplateFiles(vault: Vault, rootFolder: string): Promise<void> {
+  const tplFolder = joinVaultPath(rootFolder, "_templates");
+  await ensureFolder(vault, tplFolder);
+  await upsertFile(vault, joinVaultPath(tplFolder, "issue_sidebar.md"), issueSidebarTemplate());
+  await upsertFile(vault, joinVaultPath(tplFolder, "project_header.md"), projectHeaderTemplate());
+}
+
+// ---------------------------------------------------------------------------
+// Rich renderers — multi-layout system
+// ---------------------------------------------------------------------------
+
+function renderRichProjectNote(
+  project: HulyProject,
+  componentLinks: string[],
+  issueLinks: string[],
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique(["huly", "huly/type/project", projectTag(project)]);
+  const tasksFolder = projectTasksFolderPath(opts.rootFolder, project);
+  const tplPath = withoutExtension(joinVaultPath(opts.rootFolder, "_templates/project_header"));
+  const mb = opts.useMetaBind;
+
+  const lines: string[] = [
+    "---",
+    yamlList("cssclasses", ["huly-project", "huly-card"]),
+    yamlScalar("huly_type", "project"),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_name", project.name),
+    yamlScalar("huly_component_count", componentLinks.length),
+    yamlScalar("huly_task_count", issueLinks.length),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# 📂 ${project.identifier} ${project.name}`.trim(),
+    "",
+  ];
+
+  // -- Stats row --
+  lines.push(
+    "> [!huly-stats]",
+    ">",
+    "> > [!huly-stat]",
+    "> > **" + String(componentLinks.length) + "**",
+    "> > 🧩 Components",
+    ">",
+    "> > [!huly-stat]",
+    "> > **" + String(issueLinks.length) + "**",
+    "> > 📋 Tasks",
+    ">",
+    "> > [!huly-stat]",
+    "> > **" + project.identifier + "**",
+    "> > 🆔 Identifier",
+    "",
+  );
+
+  // -- Meta Bind actions (embed or nothing) --
+  if (mb) {
+    lines.push(
+      "```meta-bind-embed",
+      `[[${tplPath}]]`,
+      "```",
+      "",
+    );
+  }
+
+  // -- Description --
+  lines.push(
+    "---",
+    "",
+    "## 📝 Description",
+    "",
+    project.description || "_No project description._",
+    "",
+    "---",
+    "",
+  );
+
+  // -- Two-column: components + dataview tasks table --
+  lines.push(
+    "> [!huly-columns]",
+    ">",
+    "> > [!huly-col]",
+    "> > ### 🧩 Components",
+    "> >",
+  );
+
+  if (componentLinks.length === 0) {
+    lines.push("> > _No components_");
+  } else {
+    for (const link of componentLinks) {
+      lines.push(`> > - ${link}`);
+    }
+  }
+
+  lines.push(
+    ">",
+    "> > [!huly-col]",
+    "> > ### 📋 Tasks",
+    "> >",
+  );
+
+  lines.push(
+    "> > ```dataview",
+    "> > TABLE WITHOUT ID",
+    "> >   file.link AS \"Task\",",
+    "> >   huly_status AS \"Status\",",
+    "> >   huly_priority AS \"Priority\"",
+    `> > FROM "${tasksFolder}"`,
+    "> > SORT huly_priority DESC",
+    "> > ```",
+    "",
+  );
+
+  // -- Full task list fallback (in case Dataview is not installed) --
+  lines.push(
+    "---",
+    "",
+    "## 📋 All Tasks",
+    "",
+  );
+
+  if (issueLinks.length === 0) {
+    lines.push("_No tasks_");
+  } else {
+    for (const link of issueLinks) {
+      lines.push(`- ${link}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function renderRichComponentNote(
+  project: HulyProject,
+  component: HulyComponent,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique([
+    "huly",
+    "huly/type/component",
+    projectTag(project),
+    ...componentTag(component.label),
+  ]);
+
+  const projectDisplay = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
+  const updatedDisplay = formatReadableDatetime(component.modifiedOn);
+
+  const lines: string[] = [
+    "---",
+    yamlList("cssclasses", ["huly-component", "huly-card"]),
+    yamlScalar("huly_type", "component"),
+    yamlScalar("huly_component_id", component.id),
+    yamlScalar("huly_component_name", component.label),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_updated_at", toIsoDate(component.modifiedOn)),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# 🧩 ${component.label}`,
+    "",
+    // -- Header bar with breadcrumb --
+    `> [!huly-header]`,
+    `> 📂 ${projectDisplay} · 🔄 ${updatedDisplay}`,
+    "",
+    "---",
+    "",
+    "## 📝 Description",
+    "",
+    component.description || "_No component description._",
+    "",
+  ];
+
+  // -- Attachments --
+  if (component.attachments.length > 0) {
+    lines.push("---", "", "## 📎 Attachments", "");
+    for (const att of component.attachments) {
+      const meta = [att.mimeType, humanFileSize(att.size)]
+        .filter((p) => p.trim().length > 0)
+        .join(", ");
+      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+    }
+    lines.push("");
+  }
+
+  // -- Comments --
+  lines.push(...renderCommentsRich(component.comments));
+
+  return lines.join("\n");
+}
+
+function renderRichIssueNote(
+  project: HulyProject,
+  issue: HulyIssue,
+  projectNoteLink: string,
+  componentNoteLink: string | null,
+  parentLinks: string[],
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique([
+    "huly",
+    "huly/type/issue",
+    projectTag(project),
+    statusTag(issue.statusName),
+    ...componentTag(issue.componentName),
+    ...labelTags(issue.labels),
+  ]);
+
+  const mb = opts.useMetaBind;
+  const pEmoji = priorityEmoji(issue.priority, issue.isClosed);
+  const variant = issueHeaderVariant(issue.priority, issue.isClosed);
+
+  const statusDisp = `${statusDot(issue.statusName)} ${issue.statusName}`;
+  const priorityDisp = `${pEmoji} ${issue.priority}`;
+  const dueDisp = issue.dueDate !== null ? formatReadableDate(issue.dueDate) : "Not set";
+  const updatedDisp = formatReadableDatetime(issue.modifiedOn);
+  const labelsDisp = issue.labels.length > 0 ? issue.labels.join(", ") : "None";
+  const labelsInline = issue.labels.length > 0
+    ? issue.labels.map((l) => `\`${l}\``).join(" ")
+    : "—";
+
+  const componentDisplay = componentNoteLink && issue.componentName
+    ? wikilink(componentNoteLink, issue.componentName)
+    : issue.componentName ?? "—";
+  const projectLinkMd = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
+  const parentLinkMd = parentLinks.length > 0 ? parentLinks.join(", ") : "None";
+
+  const lines: string[] = [
+    "---",
+    yamlList("cssclasses", ["huly-issue", "huly-card"]),
+    yamlScalar("huly_type", "issue"),
+    yamlScalar("huly_issue_id", issue.id),
+    yamlScalar("huly_issue_identifier", issue.identifier),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_name", project.name),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_status", issue.statusName),
+    yamlScalar("huly_priority", issue.priority),
+    yamlScalar("huly_assignee", issue.assigneeName),
+    yamlScalar("huly_component", issue.componentName),
+    yamlScalar("huly_component_note", componentNoteLink ? withoutExtension(componentNoteLink) : null),
+    yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
+    yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
+    yamlScalar("huly_is_closed", issue.isClosed),
+    yamlList("huly_labels", issue.labels),
+    // display properties for Meta Bind VIEW fields
+    yamlScalar("huly_status_display", statusDisp),
+    yamlScalar("huly_priority_display", priorityDisp),
+    yamlScalar("huly_due_display", dueDisp),
+    yamlScalar("huly_updated_display", updatedDisp),
+    yamlScalar("huly_labels_display", labelsDisp),
+    yamlScalar("huly_project_link", projectLinkMd),
+    yamlScalar("huly_component_link", componentDisplay),
+    yamlScalar("huly_parent_link", parentLinkMd),
+    yamlList("tags", tags),
+    "---",
+    "",
+  ];
+
+  // -- Hidden Meta Bind button (outside callouts) --
+  if (mb) {
+    lines.push(
+      "```meta-bind-button",
+      "label: \"🔄 Sync\"",
+      "hidden: true",
+      "id: \"huly-sync-btn\"",
+      "style: primary",
+      "action:",
+      "  type: command",
+      "  command: huly-sync:huly-sync-run-manual",
+      "```",
+      "",
+    );
+  }
+
+  // -- Title --
+  lines.push(`# ${pEmoji} ${issue.identifier} ${issue.title}`.trim(), "");
+
+  // -- Header bar --
+  const assigneeStr = issue.assigneeName ? `👤 ${issue.assigneeName}` : "👤 Unassigned";
+  lines.push(
+    `> [!huly-header|${variant}]`,
+    `> ${statusDisp} · ⚡ ${issue.priority} · ${assigneeStr} · 📅 ${dueDisp}`,
+    "",
+  );
+
+  // == Two-column layout ==
+  lines.push("> [!huly-layout]", ">");
+
+  // ---- LEFT: Main content ----
+  lines.push(L2("[!huly-main]"), L2(""));
+
+  // Description
+  lines.push(L2("### 📝 Description"), L2(""));
+  const desc = issue.description.trim() || "_No description_";
+  lines.push(...contentToL2(desc));
+
+  // Attachments
+  if (issue.attachments.length > 0) {
+    lines.push(L2(""), L2("---"), L2(""), L2("### 📎 Attachments"), L2(""));
+    for (const att of issue.attachments) {
+      const meta = [att.mimeType, humanFileSize(att.size)]
+        .filter((p) => p.trim().length > 0)
+        .join(", ");
+      lines.push(L2(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`));
+    }
+  }
+
+  // Comments
+  lines.push(L2(""), L2("---"), L2(""));
+  if (issue.comments.length === 0) {
+    lines.push(L2("### 💬 Comments"), L2(""), L2("_No comments_"));
+  } else {
+    lines.push(L2(`### 💬 Comments (${issue.comments.length})`));
+    for (const comment of issue.comments) {
+      const cDate = formatReadableDatetime(comment.updatedAt);
+      const cBody = comment.body.trim() || "_Empty comment_";
+      lines.push(L2(""), L2("---"), L2(""));
+      lines.push(L2(`**💬 ${comment.authorName}** · _${cDate}_`));
+      lines.push(L2(""));
+      lines.push(...contentToL2(cBody));
+      if (comment.attachments.length > 0) {
+        lines.push(L2(""));
+        for (const att of comment.attachments) {
+          const meta = [att.mimeType, humanFileSize(att.size)]
+            .filter((p) => p.trim().length > 0)
+            .join(", ");
+          lines.push(L2(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`));
+        }
+      }
+    }
+  }
+
+  // ---- Separator between nested callouts ----
+  lines.push(">");
+
+  // ---- RIGHT: Sidebar ----
+  lines.push(L2("[!huly-sidebar]"), L2(""));
+
+  if (mb) {
+    // Use Meta Bind embed — template binds to this note's frontmatter
+    const tplPath = withoutExtension(joinVaultPath(opts.rootFolder, "_templates/issue_sidebar"));
+    lines.push(
+      L2("```meta-bind-embed"),
+      L2(`[[${tplPath}]]`),
+      L2("```"),
+    );
+  } else {
+    // Direct rendering without Meta Bind
+    lines.push(
+      L2("##### Details"),
+      L2(""),
+      L2("| | |"),
+      L2("|:--|:--|"),
+      L2(`| 🔖 **Status** | ${statusDisp} |`),
+      L2(`| ⚡ **Priority** | ${priorityDisp} |`),
+      L2(`| 👤 **Assignee** | ${issue.assigneeName ?? "Unassigned"} |`),
+      L2(`| 📅 **Due Date** | ${dueDisp} |`),
+      L2(`| 🏷️ **Labels** | ${labelsInline} |`),
+      L2(`| 🔄 **Updated** | ${updatedDisp} |`),
+      L2(""),
+      L2("---"),
+      L2(""),
+      L2("##### Relations"),
+      L2(""),
+      L2("| | |"),
+      L2("|:--|:--|"),
+      L2(`| 📂 **Project** | ${projectLinkMd} |`),
+      L2(`| 🧩 **Component** | ${componentDisplay} |`),
+      L2(`| ⬆️ **Parent** | ${parentLinkMd} |`),
+    );
+  }
+
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/** Full-width comments for component notes (not inside a nested callout) */
+function renderCommentsRich(comments: HulyComment[]): string[] {
+  if (comments.length === 0) {
+    return ["---", "", "## 💬 Comments", "", "_No comments_"];
+  }
+
+  const blocks: string[] = ["---", "", `## 💬 Comments (${comments.length})`, ""];
+
+  for (const comment of comments) {
+    const date = formatReadableDatetime(comment.updatedAt);
+    const body = comment.body.trim() || "_Empty comment_";
+
+    blocks.push(
+      "---",
+      "",
+      `**💬 ${comment.authorName}** · _${date}_`,
+      "",
+      body,
+      "",
+    );
+
+    if (comment.attachments.length > 0) {
+      for (const att of comment.attachments) {
+        const meta = [att.mimeType, humanFileSize(att.size)]
+          .filter((p) => p.trim().length > 0)
+          .join(", ");
+        blocks.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+      }
+      blocks.push("");
+    }
+  }
+
+  return blocks;
+}
+
+// ---------------------------------------------------------------------------
+// Classic renderers (original format)
+// ---------------------------------------------------------------------------
+
 function renderProjectNote(
   project: HulyProject,
   componentLinks: string[],
@@ -356,6 +915,48 @@ function renderIssueNote(
   ].join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Render dispatch — choose renderer based on settings
+// ---------------------------------------------------------------------------
+
+function dispatchProjectNote(
+  project: HulyProject,
+  componentLinks: string[],
+  issueLinks: string[],
+  opts: NoteRenderOptions,
+): string {
+  if (opts.noteStyle === "rich") {
+    return renderRichProjectNote(project, componentLinks, issueLinks, opts);
+  }
+  return renderProjectNote(project, componentLinks, issueLinks);
+}
+
+function dispatchComponentNote(
+  project: HulyProject,
+  component: HulyComponent,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  if (opts.noteStyle === "rich") {
+    return renderRichComponentNote(project, component, projectNoteLink, opts);
+  }
+  return renderComponentNote(project, component, projectNoteLink);
+}
+
+function dispatchIssueNote(
+  project: HulyProject,
+  issue: HulyIssue,
+  projectNoteLink: string,
+  componentNoteLink: string | null,
+  parentLinks: string[],
+  opts: NoteRenderOptions,
+): string {
+  if (opts.noteStyle === "rich") {
+    return renderRichIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
+  }
+  return renderIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks);
+}
+
 async function ensureFolder(vault: Vault, path: string): Promise<void> {
   const normalized = normalizePath(path);
   if (normalized === ".") {
@@ -410,7 +1011,16 @@ export class VaultSyncService {
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
     const rootFolder = settings.targetFolder.trim() || "huly";
+    const renderOpts: NoteRenderOptions = {
+      noteStyle: settings.noteStyle ?? "rich",
+      useMetaBind: settings.useMetaBind ?? true,
+      rootFolder,
+    };
     await ensureFolder(this.app.vault, rootFolder);
+
+    if (renderOpts.noteStyle === "rich" && renderOpts.useMetaBind) {
+      await writeTemplateFiles(this.app.vault, rootFolder);
+    }
 
     const componentsByProject = new Map<string, HulyComponent[]>();
     const issuesByProject = new Map<string, HulyIssue[]>();
@@ -489,7 +1099,7 @@ export class VaultSyncService {
       await upsertFile(
         this.app.vault,
         projectNote,
-        renderProjectNote(project, componentLinks, issueLinks),
+        dispatchProjectNote(project, componentLinks, issueLinks, renderOpts),
       );
       completedWrites += 1;
       reportWriteProgress(`Project note: ${project.identifier}`);
@@ -500,7 +1110,7 @@ export class VaultSyncService {
         await upsertFile(
           this.app.vault,
           componentPath,
-          renderComponentNote(project, component, projectNote),
+          dispatchComponentNote(project, component, projectNote, renderOpts),
         );
         completedWrites += 1;
         reportWriteProgress(`Component: ${project.identifier} / ${component.label}`);
@@ -517,12 +1127,13 @@ export class VaultSyncService {
         await upsertFile(
           this.app.vault,
           issuePath,
-          renderIssueNote(
+          dispatchIssueNote(
             project,
             issue,
             projectNote,
             componentNoteLink,
             linksToParents,
+            renderOpts,
           ),
         );
         completedWrites += 1;
