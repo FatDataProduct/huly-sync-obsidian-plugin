@@ -1,0 +1,10 @@
+{
+  "id": "huly-sync",
+  "name": "Huly Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Synchronize selected Huly projects, issues, and components into your Obsidian vault.",
+  "author": "Konstantin Solomatin",
+  "authorUrl": "https://github.com/tokuseiHagane",
+  "isDesktopOnly": false
+}

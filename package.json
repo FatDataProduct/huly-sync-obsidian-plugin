@@ -1,0 +1,36 @@
+{
+  "name": "obsidian-huly-sync",
+  "version": "0.1.0",
+  "description": "Obsidian plugin for syncing Huly projects, issues, and components into a vault.",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "huly",
+    "sync"
+  ],
+  "author": "Cursor",
+  "license": "MIT",
+  "dependencies": {
+    "@hcengineering/api-client": "^0.7.19",
+    "@hcengineering/attachment": "^0.7.0",
+    "@hcengineering/contact": "^0.7.0",
+    "@hcengineering/core": "^0.7.26",
+    "@hcengineering/tags": "^0.7.0",
+    "@hcengineering/task": "^0.7.0",
+    "@hcengineering/text": "^0.7.19",
+    "@hcengineering/text-markdown": "^0.7.21",
+    "@hcengineering/tracker": "^0.7.0",
+    "obsidian": "latest",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "esbuild": "^0.27.3",
+    "typescript": "^5.9.3"
+  }
+}

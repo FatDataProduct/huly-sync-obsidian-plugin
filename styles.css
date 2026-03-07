@@ -1,0 +1,22 @@
+.huly-sync-muted {
+  color: var(--text-muted);
+}
+
+.huly-sync-progress-message {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.huly-sync-progress-bar {
+  width: 100%;
+  height: 12px;
+  margin-bottom: 6px;
+}
+
+.huly-sync-progress-bar.is-indeterminate {
+  opacity: 0.7;
+}
+
+.huly-sync-progress-meta {
+  margin-bottom: 18px;
+}
