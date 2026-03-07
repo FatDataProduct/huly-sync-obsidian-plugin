@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Verify tag and manifest versions
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match package.json ($PACKAGE_VERSION)"
+            exit 1
+          fi
+
+          if [ "$TAG_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Tag version ($TAG_VERSION) does not match manifest.json ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp manifest.json main.js styles.css release/
+          cd release
+          zip -r "../huly-sync-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            manifest.json
+            main.js
+            styles.css
+            huly-sync-${{ github.ref_name }}.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

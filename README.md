@@ -60,6 +60,36 @@ huly/
 - No Node.js file APIs, shell commands, or desktop-only Electron APIs are used at runtime.
 - Scheduled sync works while Obsidian is open on the phone. Mobile OS background restrictions can still pause the app when it is not active.
 
+## Installation
+
+### From GitHub Releases
+
+1. Open the repository `Releases` page.
+2. Download `manifest.json`, `main.js`, and `styles.css` from the latest release.
+3. Create the folder `<your-vault>/.obsidian/plugins/huly-sync/`.
+4. Put the three files into that folder.
+5. Enable `Huly Sync` in `Settings -> Community plugins`.
+
+### From source
+
+```bash
+npm install
+npm run build
+```
+
+Then copy `manifest.json`, `main.js`, and `styles.css` into:
+
+```text
+<your-vault>/.obsidian/plugins/huly-sync/
+```
+
+## Release flow
+
+- `CI` runs on every push to `main` and on every pull request.
+- `Release` runs when a git tag is pushed.
+- The release workflow builds the plugin and uploads `manifest.json`, `main.js`, `styles.css`, and a zip archive to GitHub Releases.
+- The pushed tag must match the versions in both `package.json` and `manifest.json`.
+
 ## Development
 
 ```bash
