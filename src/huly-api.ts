@@ -117,7 +117,12 @@ const getSocialIdByPersonId = (
     getSocialIdByPersonId?: (
       client: PlatformClient,
       personId: string,
-    ) => Promise<{ type?: string; value?: string; displayValue?: string } | null>;
+    ) => Promise<{
+      type?: string;
+      value?: string;
+      displayValue?: string;
+      attachedTo?: string;
+    } | null>;
   }
 ).getSocialIdByPersonId;
 const getPrimarySocialId = (
@@ -128,6 +133,14 @@ const getPrimarySocialId = (
     ) => Promise<string | undefined>;
   }
 ).getPrimarySocialId;
+const getPersonByPersonRef = (
+  contactModule as typeof contactModule & {
+    getPersonByPersonRef?: (
+      client: PlatformClient,
+      personRef: string,
+    ) => Promise<{ name?: string } | null>;
+  }
+).getPersonByPersonRef;
 const formatName = (
   contactModule as typeof contactModule & {
     formatName?: (name: string, lastNameFirst?: string) => string;
@@ -259,11 +272,48 @@ function formatNickname(
     return null;
   }
 
+  // Technical Huly ids are UUID-like strings, not human nicknames.
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw)) {
+    return null;
+  }
+
   if (social.type === "huly" || social.type === "telegram" || social.type === "github") {
     return raw.startsWith("@") ? raw : `@${raw}`;
   }
 
   return raw;
+}
+
+async function resolveReadablePersonName(
+  client: PlatformClient,
+  personRef: string | null | undefined,
+): Promise<string | null> {
+  if (!personRef || !getPersonByPersonRef) {
+    return null;
+  }
+
+  try {
+    const person = await getPersonByPersonRef(client, personRef);
+    return formatReadableName(person?.name);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSocialDisplayName(
+  client: PlatformClient,
+  social: { type?: string; value?: string; displayValue?: string; attachedTo?: string } | null,
+): Promise<string | null> {
+  if (!social) {
+    return null;
+  }
+
+  const nickname = formatNickname(social);
+  if (nickname) {
+    return nickname;
+  }
+
+  return await resolveReadablePersonName(client, social.attachedTo);
 }
 
 async function resolveCommentAuthorName(
@@ -273,9 +323,9 @@ async function resolveCommentAuthorName(
   if (getSocialIdByPersonId) {
     try {
       const social = await getSocialIdByPersonId(client, personId);
-      const nickname = formatNickname(social);
-      if (nickname) {
-        return nickname;
+      const displayName = await resolveSocialDisplayName(client, social);
+      if (displayName) {
+        return displayName;
       }
     } catch {
       // Ignore social identity lookup issues and continue to readable name fallback.
@@ -292,6 +342,19 @@ async function resolveCommentAuthorName(
     } catch {
       // Ignore cache/person lookup issues and fall back to the raw person id.
     }
+  }
+
+  try {
+    const employee = await client.findOne(contact.mixin.Employee, {
+      personUuid: personId as never,
+      active: true,
+    });
+    const readableName = formatReadableName(employee?.name);
+    if (readableName) {
+      return readableName;
+    }
+  } catch {
+    // Ignore employee lookup issues and fall back to the raw author id.
   }
 
   return personId;
@@ -311,9 +374,9 @@ async function resolveAssigneeName(
       const primarySocialId = await getPrimarySocialId(client, assigneeRef);
       if (primarySocialId) {
         const social = await getSocialIdByPersonId(client, primarySocialId);
-        const nickname = formatNickname(social);
-        if (nickname) {
-          return nickname;
+        const displayName = await resolveSocialDisplayName(client, social);
+        if (displayName) {
+          return displayName;
         }
       }
     } catch {
