@@ -17,6 +17,7 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Pull comments for issues and components.
 - Render wikilinks between projects, components, and parent issues.
 - Show synchronization progress in plugin settings.
+- Make scheduled sync timing more predictable and show scheduler state in settings.
 - Prefer user nicknames for assignees and comment authors, with readable full names as fallback.
 - Run manual full syncs and scheduled syncs.
 - Designed to run on both desktop and mobile Obsidian.
@@ -32,11 +33,17 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 5. Optionally change the target folder. Default: `huly`.
 6. Load and select the projects you want to sync.
 7. Run a manual sync.
+8. Optionally set `Sync interval in minutes`:
+   - `0` disables scheduled sync completely.
+   - any positive number enables predictable periodic sync while Obsidian stays open.
 
 ## Current behavior
 
 - Manual sync writes project notes, component notes, and issue notes for all selected projects.
-- Scheduled sync refreshes all synced issues for all selected projects.
+- Scheduled sync refreshes all synced issues for all selected projects on a fixed interval while Obsidian is open.
+- Successful scheduled syncs no longer reset the timer after each run.
+- If a scheduled tick happens while another sync is already running, that tick is skipped and recorded in plugin settings instead of starting a parallel sync.
+- Plugin settings show `Next scheduled sync` plus the timestamp and status of the last scheduled attempt.
 - Synced content is written under `huly/` by default.
 - Project notes use descriptive filenames like `PN Project Name.md`.
 - Issue notes include due dates, time tracking, labels, attachments, comments, and wikilinks.
@@ -154,6 +161,7 @@ huly/
 - `manifest.json` keeps `isDesktopOnly: false`, so the plugin can load on phones.
 - No Node.js file APIs, shell commands, or desktop-only Electron APIs are used at runtime.
 - Scheduled sync works while Obsidian is open on the phone. Mobile OS background restrictions can still pause the app when it is not active.
+- The scheduler is in-app only. If the mobile app is suspended or closed, the next sync runs after Obsidian becomes active again and the interval timer resumes.
 
 ## Installation
 

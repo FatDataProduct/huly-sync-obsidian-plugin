@@ -2,6 +2,8 @@ export type AuthMethod = "password" | "token";
 
 export type NoteStyle = "classic" | "rich";
 
+export type ScheduledSyncStatus = "idle" | "success" | "error" | "skipped";
+
 export interface StoredProjectConfig {
   id: string;
   identifier: string;
@@ -23,6 +25,9 @@ export interface HulySyncSettings {
   useMetaBind: boolean;
   projects: StoredProjectConfig[];
   lastSyncAt: string | null;
+  lastScheduledSyncAt: string | null;
+  lastScheduledSyncStatus: ScheduledSyncStatus;
+  lastScheduledSyncMessage: string | null;
 }
 
 export interface ConnectionConfig {
@@ -145,4 +150,7 @@ export const DEFAULT_SETTINGS: HulySyncSettings = {
   useMetaBind: true,
   projects: [],
   lastSyncAt: null,
+  lastScheduledSyncAt: null,
+  lastScheduledSyncStatus: "idle",
+  lastScheduledSyncMessage: null,
 };

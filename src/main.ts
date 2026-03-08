@@ -14,6 +14,7 @@ import {
   type ConnectionConfig,
   type HulyProject,
   type NoteStyle,
+  type ScheduledSyncStatus,
   type SyncProgress,
   type HulySyncSettings,
   type StoredProjectConfig,
@@ -24,6 +25,19 @@ function projectFolderPreview(rootFolder: string, identifier: string): string {
   return normalizePath(`${rootFolder || "huly"}/${identifier}`);
 }
 
+function formatTimestamp(value: string | number | null): string | null {
+  if (value === null) {
+    return null;
+  }
+
+  const date = typeof value === "number" ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toLocaleString();
+}
+
 export default class HulySyncPlugin extends Plugin {
   settings: HulySyncSettings = DEFAULT_SETTINGS;
 
@@ -32,6 +46,8 @@ export default class HulySyncPlugin extends Plugin {
   private readonly vaultSync = new VaultSyncService(this.app);
 
   private syncIntervalId: number | null = null;
+
+  private nextScheduledSyncAt: number | null = null;
 
   private isSyncing = false;
 
@@ -109,9 +125,15 @@ export default class HulySyncPlugin extends Plugin {
     );
   }
 
-  async persistSettings(): Promise<void> {
+  getNextScheduledSyncAt(): number | null {
+    return this.nextScheduledSyncAt;
+  }
+
+  async persistSettings(options?: { reschedule?: boolean }): Promise<void> {
     await this.saveData(this.settings);
-    this.rescheduleSync();
+    if (options?.reschedule) {
+      this.rescheduleSync();
+    }
   }
 
   async refreshProjects(): Promise<void> {
@@ -143,12 +165,19 @@ export default class HulySyncPlugin extends Plugin {
     if (this.isSyncing) {
       if (options.reason === "manual") {
         new Notice("Huly Sync: synchronization is already running.");
+      } else {
+        await this.recordScheduledSync("skipped", "Skipped: another sync is already running.");
       }
       return;
     }
 
     const selectedProjects = this.getSelectedProjects();
     if (selectedProjects.length === 0) {
+      if (options.reason === "scheduled") {
+        await this.recordScheduledSync("skipped", "Skipped: no Huly projects selected.");
+        return;
+      }
+
       throw new Error("Выберите хотя бы один проект Huly для синхронизации.");
     }
 
@@ -190,7 +219,11 @@ export default class HulySyncPlugin extends Plugin {
       );
 
       this.settings.lastSyncAt = new Date().toISOString();
+      if (options.reason === "scheduled") {
+        this.setScheduledSyncState("success", null);
+      }
       await this.persistSettings();
+      this.settingsTab?.display();
 
       const successMessage = `Synced ${stats.projectCount} projects, ${stats.componentCount} components and ${stats.issueCount} issues.`;
       this.setSyncProgress({
@@ -207,6 +240,11 @@ export default class HulySyncPlugin extends Plugin {
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      if (options.reason === "scheduled") {
+        this.setScheduledSyncState("error", message);
+        await this.persistSettings();
+        this.settingsTab?.display();
+      }
       this.setSyncProgress({
         active: false,
         phase: "error",
@@ -226,6 +264,8 @@ export default class HulySyncPlugin extends Plugin {
       window.clearInterval(this.syncIntervalId);
       this.syncIntervalId = null;
     }
+
+    this.nextScheduledSyncAt = null;
   }
 
   private rescheduleSync(): void {
@@ -236,7 +276,12 @@ export default class HulySyncPlugin extends Plugin {
       return;
     }
 
+    const intervalMs = minutes * 60 * 1000;
+    this.nextScheduledSyncAt = Date.now() + intervalMs;
+
     this.syncIntervalId = window.setInterval(() => {
+      this.nextScheduledSyncAt = Date.now() + intervalMs;
+      this.settingsTab?.display();
       void this.runSync({
         reason: "scheduled",
       }).catch((error: unknown) => {
@@ -244,7 +289,25 @@ export default class HulySyncPlugin extends Plugin {
         console.error("Huly Sync scheduled error", error);
         new Notice(`Huly Sync scheduled sync failed: ${message}`);
       });
-    }, minutes * 60 * 1000);
+    }, intervalMs);
+  }
+
+  private setScheduledSyncState(
+    status: ScheduledSyncStatus,
+    message: string | null,
+  ): void {
+    this.settings.lastScheduledSyncAt = new Date().toISOString();
+    this.settings.lastScheduledSyncStatus = status;
+    this.settings.lastScheduledSyncMessage = message;
+  }
+
+  private async recordScheduledSync(
+    status: ScheduledSyncStatus,
+    message: string | null,
+  ): Promise<void> {
+    this.setScheduledSyncState(status, message);
+    await this.persistSettings();
+    this.settingsTab?.display();
   }
 
   private setSyncProgress(progress: SyncProgress): void {
@@ -378,7 +441,7 @@ class HulySyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Sync interval in minutes")
-      .setDesc("Scheduled sync refreshes all issues in selected projects.")
+      .setDesc("Scheduled sync refreshes selected projects. Set `0` to disable auto sync.")
       .addText((text) =>
         text
           .setPlaceholder("15")
@@ -388,9 +451,45 @@ class HulySyncSettingTab extends PluginSettingTab {
             this.plugin.settings.syncIntervalMinutes = Number.isFinite(parsed)
               ? parsed
               : DEFAULT_SETTINGS.syncIntervalMinutes;
-            await this.plugin.persistSettings();
+            await this.plugin.persistSettings({ reschedule: true });
+            this.display();
           }),
       );
+
+    const intervalMinutes = this.plugin.settings.syncIntervalMinutes;
+    if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) {
+      containerEl.createEl("p", {
+        text: "Auto sync: disabled",
+        cls: "huly-sync-muted",
+      });
+    } else {
+      containerEl.createEl("p", {
+        text: `Auto sync: every ${intervalMinutes} minute(s)`,
+        cls: "huly-sync-muted",
+      });
+    }
+
+    const nextScheduledSyncAt = formatTimestamp(this.plugin.getNextScheduledSyncAt());
+    if (nextScheduledSyncAt) {
+      containerEl.createEl("p", {
+        text: `Next scheduled sync: ${nextScheduledSyncAt}`,
+        cls: "huly-sync-muted",
+      });
+    }
+
+    if (this.plugin.settings.lastScheduledSyncAt) {
+      const lastScheduledAt =
+        formatTimestamp(this.plugin.settings.lastScheduledSyncAt) ??
+        this.plugin.settings.lastScheduledSyncAt;
+      const lastScheduledStatus = this.plugin.settings.lastScheduledSyncStatus;
+      const lastScheduledMessage = this.plugin.settings.lastScheduledSyncMessage;
+      const details = lastScheduledMessage ? ` (${lastScheduledMessage})` : "";
+
+      containerEl.createEl("p", {
+        text: `Last scheduled sync: ${lastScheduledAt} [${lastScheduledStatus}]${details}`,
+        cls: "huly-sync-muted",
+      });
+    }
 
     containerEl.createEl("h3", { text: "Note appearance" });
 
@@ -489,8 +588,10 @@ class HulySyncSettingTab extends PluginSettingTab {
     }
 
     if (this.plugin.settings.lastSyncAt) {
+      const lastSyncAt =
+        formatTimestamp(this.plugin.settings.lastSyncAt) ?? this.plugin.settings.lastSyncAt;
       containerEl.createEl("p", {
-        text: `Last sync: ${this.plugin.settings.lastSyncAt}`,
+        text: `Last sync: ${lastSyncAt}`,
         cls: "huly-sync-muted",
       });
     }
