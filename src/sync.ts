@@ -29,6 +29,8 @@ interface NoteRenderOptions {
 
 const WRITE_CONCURRENCY = 8;
 
+type YamlScalarValue = string | number | boolean | null;
+
 function slugify(value: string): string {
   return value
     .trim()
@@ -58,12 +60,16 @@ function toDateOnlyString(timestamp: number | null): string | null {
   return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
 }
 
-function yamlScalar(name: string, value: string | number | boolean | null): string {
+function yamlScalarValue(value: YamlScalarValue): string {
   if (value === null) {
-    return `${name}: null`;
+    return "null";
   }
 
-  return `${name}: ${JSON.stringify(value)}`;
+  return JSON.stringify(value);
+}
+
+function yamlScalar(name: string, value: YamlScalarValue): string {
+  return `${name}: ${yamlScalarValue(value)}`;
 }
 
 function yamlList(name: string, values: string[]): string {
@@ -71,9 +77,31 @@ function yamlList(name: string, values: string[]): string {
     return `${name}: []`;
   }
 
-  return [name + ":", ...values.map((value) => `  - ${JSON.stringify(value)}`)].join(
+  return [name + ":", ...values.map((value) => `  - ${yamlScalarValue(value)}`)].join(
     "\n",
   );
+}
+
+function yamlObjectList(name: string, values: Record<string, YamlScalarValue>[]): string {
+  if (values.length === 0) {
+    return `${name}: []`;
+  }
+
+  return [
+    name + ":",
+    ...values.flatMap((value) => {
+      const entries = Object.entries(value);
+      if (entries.length === 0) {
+        return ["  - {}"];
+      }
+
+      return entries.map(([key, entryValue], index) =>
+        index === 0
+          ? `  - ${key}: ${yamlScalarValue(entryValue)}`
+          : `    ${key}: ${yamlScalarValue(entryValue)}`,
+      );
+    }),
+  ].join("\n");
 }
 
 function formatDuration(duration: number | null | undefined): string {
@@ -295,6 +323,15 @@ type EmployeeTimeSummary = {
   total: number;
 };
 
+type EmployeeTimeFrontmatterEntry = {
+  employee_name: string;
+  employee_slug: string;
+  reported_time_ms: number;
+  reported_time_hours: number;
+  reported_time_minutes: number;
+  reported_time_display: string;
+};
+
 function summarizeTimeReports(reports: HulyTimeReport[]): EmployeeTimeSummary[] {
   const totals = new Map<string, number>();
   for (const report of reports) {
@@ -316,6 +353,19 @@ function topTimeReporter(summary: EmployeeTimeSummary[]): EmployeeTimeSummary | 
 
 function projectTimeSummary(issues: HulyIssue[]): EmployeeTimeSummary[] {
   return summarizeTimeReports(issues.flatMap((issue) => issue.timeReports));
+}
+
+function timeSummaryFrontmatter(
+  summary: EmployeeTimeSummary[],
+): EmployeeTimeFrontmatterEntry[] {
+  return summary.map((item) => ({
+    employee_name: item.employeeName,
+    employee_slug: slugify(item.employeeName),
+    reported_time_ms: item.total,
+    reported_time_hours: durationToHours(item.total),
+    reported_time_minutes: durationToMinutes(item.total),
+    reported_time_display: formatDurationShort(item.total),
+  }));
 }
 
 function sumIssueDurations(issues: HulyIssue[]) {
@@ -531,6 +581,7 @@ function renderRichProjectNote(
   const totals = sumIssueDurations(issues);
   const timeSummary = projectTimeSummary(issues);
   const topReporter = topTimeReporter(timeSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(timeSummary);
   const dueIssues = [...issues].filter((issue) => issue.dueDate !== null);
   const overdueOpenIssues = issues.filter(
     (issue) => !issue.isClosed && issue.dueDate !== null && (dueInDays(issue.dueDate) ?? 1) < 0,
@@ -569,6 +620,7 @@ function renderRichProjectNote(
       "huly_time_by_employee_display",
       timeSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
+    yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
     yamlList("tags", tags),
     "---",
     "",
@@ -806,6 +858,7 @@ function renderRichIssueNote(
   const remainingDisp = formatDuration(issue.remainingTime);
   const reportSummary = summarizeTimeReports(issue.timeReports);
   const topReporter = topTimeReporter(reportSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(reportSummary);
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
 
@@ -867,6 +920,7 @@ function renderRichIssueNote(
       "huly_time_by_employee_display",
       reportSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
+    yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
     yamlList("huly_labels", sortedLabels),
@@ -1089,6 +1143,7 @@ function renderProjectNote(
   const totals = sumIssueDurations(issues);
   const timeSummary = projectTimeSummary(issues);
   const topReporter = topTimeReporter(timeSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(timeSummary);
   const dueIssues = [...issues]
     .filter((issue) => issue.dueDate !== null)
     .sort((left, right) => (left.dueDate ?? 0) - (right.dueDate ?? 0));
@@ -1125,6 +1180,7 @@ function renderProjectNote(
       "huly_time_by_employee_display",
       timeSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
+    yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
     yamlList("tags", tags),
     "---",
     "",
@@ -1217,6 +1273,7 @@ function renderIssueNote(
   const sortedLabels = [...issue.labels].sort(compareStrings);
   const reportSummary = summarizeTimeReports(issue.timeReports);
   const topReporter = topTimeReporter(reportSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(reportSummary);
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
   const tags = unique([
@@ -1282,6 +1339,7 @@ function renderIssueNote(
       "huly_time_by_employee_display",
       reportSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
+    yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
     yamlScalar("huly_estimation_display", formatDuration(issue.estimation)),
     yamlScalar("huly_reported_display", formatDuration(issue.reportedTime)),
     yamlScalar("huly_remaining_display", formatDuration(issue.remainingTime)),

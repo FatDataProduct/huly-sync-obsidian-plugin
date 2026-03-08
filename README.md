@@ -11,6 +11,7 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Sync task due dates and expose them as frontmatter fields for Calendar/Dataview-friendly workflows.
 - Sync task estimation, reported time, remaining time, and detailed time reports.
 - Show project-level summaries for time spent, remaining work, and employee effort.
+- Expose exact per-employee time totals in machine-readable frontmatter for Dataview.
 - Support both `email + password` and `token` authentication.
 - Support custom Huly base URLs and workspace selection.
 - Pull attachments as links from issues, components, and comments.
@@ -57,6 +58,13 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - This makes synced tasks easier to consume from Calendar-style plugins, Dataview tables, and other frontmatter-based workflows.
 - Time tracking fields include estimate, reported time, remaining time, and detailed time report entries when Huly provides them.
 - Project notes aggregate time reports by employee and show upcoming deadlines across project tasks.
+- Issue and project notes also expose `huly_time_by_employee` as a YAML list of objects with exact totals per reporter:
+  - `employee_name`
+  - `employee_slug`
+  - `reported_time_ms`
+  - `reported_time_hours`
+  - `reported_time_minutes`
+  - `reported_time_display`
 
 ## Compatible plugins
 
@@ -142,6 +150,20 @@ WHERE huly_type = "issue"
 SORT huly_reported_time_ms DESC
 ```
 
+### Exact time by employee
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Note,
+  reporter.employee_name AS Reporter,
+  reporter.reported_time_hours AS Hours,
+  reporter.reported_time_display AS Spent
+FROM "huly"
+FLATTEN huly_time_by_employee AS reporter
+WHERE huly_type = "issue"
+SORT reporter.reported_time_ms DESC
+```
+
 ## Vault layout
 
 With the default target folder, synced content looks like this:
@@ -171,9 +193,11 @@ huly/
 2. Open `BRAT` settings.
 3. Choose `Add beta plugin`.
 4. Enter the repository:
+
    ```text
    FatDataProduct/huly-sync
    ```
+
 5. Confirm installation and enable `Huly Sync`.
 
 BRAT installs the plugin from GitHub release assets, so use a tagged release rather than raw source code.
