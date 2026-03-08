@@ -19,6 +19,7 @@ export interface HulySyncSettings {
   password: string;
   token: string;
   workspace: string;
+  workdayHours: number;
   targetFolder: string;
   syncIntervalMinutes: number;
   noteStyle: NoteStyle;
@@ -144,6 +145,7 @@ export const DEFAULT_SETTINGS: HulySyncSettings = {
   password: "",
   token: "",
   workspace: "",
+  workdayHours: 8,
   targetFolder: "huly",
   syncIntervalMinutes: 15,
   noteStyle: "rich",

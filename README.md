@@ -12,11 +12,13 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Sync task estimation, reported time, remaining time, and detailed time reports.
 - Show project-level summaries for time spent, remaining work, and employee effort.
 - Expose exact per-employee time totals in machine-readable frontmatter for Dataview.
+- Convert Huly time fractions using a configurable workday length, with `8` hours per workday by default.
 - Support both `email + password` and `token` authentication.
 - Support custom Huly base URLs and workspace selection.
 - Pull attachments as links from issues, components, and comments.
 - Pull comments for issues and components.
 - Render wikilinks between projects, components, and parent issues.
+- Add a direct Huly link to each synced issue note.
 - Show synchronization progress in plugin settings.
 - Make scheduled sync timing more predictable and show scheduler state in settings.
 - Prefer user nicknames for assignees and comment authors, with readable full names as fallback.
@@ -37,6 +39,11 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 8. Optionally set `Sync interval in minutes`:
    - `0` disables scheduled sync completely.
    - any positive number enables predictable periodic sync while Obsidian stays open.
+9. Optionally set `Workday hours`:
+   - default: `8`
+   - Huly raw time values are treated as decimal hours
+   - this setting controls when human-readable output should roll over into workdays
+   - example: with `8`, `8h` is displayed as `1d`
 
 ## Current behavior
 
@@ -47,7 +54,7 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Plugin settings show `Next scheduled sync` plus the timestamp and status of the last scheduled attempt.
 - Synced content is written under `huly/` by default.
 - Project notes use descriptive filenames like `PN Project Name.md`.
-- Issue notes include due dates, time tracking, labels, attachments, comments, and wikilinks.
+- Issue notes include due dates, time tracking, labels, attachments, comments, wikilinks, and a direct Huly URL.
 - Project notes include task lists, deadline overviews, and time tracking summaries by employee.
 - Assignees and comment authors are rendered as nicknames when available.
 - Mobile compatibility is kept by using Obsidian Vault APIs and the browser WebSocket transport from the official Huly SDK.
@@ -57,6 +64,13 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - Issue notes expose `due` in `YYYY-MM-DD` format and keep `huly_due_date` as the original ISO value.
 - This makes synced tasks easier to consume from Calendar-style plugins, Dataview tables, and other frontmatter-based workflows.
 - Time tracking fields include estimate, reported time, remaining time, and detailed time report entries when Huly provides them.
+- Huly time values are interpreted as decimal hours and converted into real durations.
+- The `Workday hours` setting does not change the raw stored amount of time. It only affects how durations are formatted into `d/h/m` display strings and derived workday-based fields.
+- Example with `Workday hours = 8`:
+  - `1.0` -> `1h`
+  - `0.5` -> `30m`
+  - `1.9` -> `1h 54m`
+  - `10.5` -> `1d 2h 30m`
 - Project notes aggregate time reports by employee and show upcoming deadlines across project tasks.
 - Issue and project notes also expose `huly_time_by_employee` as a YAML list of objects with exact totals per reporter:
   - `employee_name`
@@ -65,6 +79,7 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
   - `reported_time_hours`
   - `reported_time_minutes`
   - `reported_time_display`
+- Issue notes expose `huly_issue_url`, so Dataview or other plugins can open the original Huly card directly.
 
 ## Compatible plugins
 
@@ -162,6 +177,18 @@ FROM "huly"
 FLATTEN huly_time_by_employee AS reporter
 WHERE huly_type = "issue"
 SORT reporter.reported_time_ms DESC
+```
+
+### Huly links table
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Note,
+  huly_issue_identifier AS Issue,
+  huly_issue_url AS Huly
+FROM "huly"
+WHERE huly_type = "issue" AND huly_issue_url
+SORT huly_issue_identifier ASC
 ```
 
 ## Vault layout

@@ -25,9 +25,13 @@ interface NoteRenderOptions {
   noteStyle: NoteStyle;
   useMetaBind: boolean;
   rootFolder: string;
+  hulyUrl: string;
+  workspace: string;
 }
 
 const WRITE_CONCURRENCY = 8;
+const DEFAULT_WORKDAY_HOURS = 8;
+let activeWorkdayHours = DEFAULT_WORKDAY_HOURS;
 
 type YamlScalarValue = string | number | boolean | null;
 
@@ -46,6 +50,22 @@ function sanitizePathPart(value: string): string {
 
 function joinVaultPath(...parts: string[]): string {
   return normalizePath(parts.filter((part) => part.trim().length > 0).join("/"));
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+function hulyIssueUrl(opts: NoteRenderOptions, issue: HulyIssue): string | null {
+  const baseUrl = normalizeBaseUrl(opts.hulyUrl);
+  const workspace = opts.workspace.trim();
+  const identifier = issue.identifier.trim();
+
+  if (!baseUrl || !workspace || !identifier) {
+    return null;
+  }
+
+  return `${baseUrl}/workbench/${encodeURIComponent(workspace)}/tracker/${encodeURIComponent(identifier)}`;
 }
 
 function toIsoDate(timestamp: number | null): string | null {
@@ -114,8 +134,9 @@ function formatDuration(duration: number | null | undefined): string {
   }
 
   const totalMinutes = Math.round(duration / 60000);
-  const days = Math.floor(totalMinutes / (60 * 24));
-  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const workdayMinutes = Math.max(1, Math.round(activeWorkdayHours * 60));
+  const days = Math.floor(totalMinutes / workdayMinutes);
+  const hours = Math.floor((totalMinutes % workdayMinutes) / 60);
   const minutes = totalMinutes % 60;
   const parts: string[] = [];
 
@@ -150,7 +171,7 @@ function durationToMinutes(duration: number): number {
 }
 
 function durationToDays(duration: number): number {
-  return roundMetric(duration / (24 * 60 * 60 * 1000));
+  return roundMetric(duration / (Math.max(1, activeWorkdayHours) * 60 * 60 * 1000));
 }
 
 function startOfLocalDay(timestamp: number): number {
@@ -867,6 +888,8 @@ function renderRichIssueNote(
     : issue.componentName ?? "—";
   const projectLinkMd = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
   const parentLinkMd = parentLinks.length > 0 ? parentLinks.join(", ") : "None";
+  const externalIssueUrl = hulyIssueUrl(opts, issue);
+  const issueLinkMd = externalIssueUrl ? `[Open in Huly](${externalIssueUrl})` : "Not available";
 
   const lines: string[] = [
     "---",
@@ -933,6 +956,8 @@ function renderRichIssueNote(
     yamlScalar("huly_remaining_display", remainingDisp),
     yamlScalar("huly_updated_display", updatedDisp),
     yamlScalar("huly_labels_display", labelsDisp),
+    yamlScalar("huly_issue_url", externalIssueUrl),
+    yamlScalar("huly_issue_link", issueLinkMd),
     yamlScalar("huly_project_link", projectLinkMd),
     yamlScalar("huly_component_link", componentDisplay),
     yamlScalar("huly_parent_link", parentLinkMd),
@@ -1083,6 +1108,7 @@ function renderRichIssueNote(
       L2(""),
       L2("| | |"),
       L2("|:--|:--|"),
+      L2(`| 🔗 **Huly** | ${issueLinkMd} |`),
       L2(`| 📂 **Project** | ${projectLinkMd} |`),
       L2(`| 🧩 **Component** | ${componentDisplay} |`),
       L2(`| ⬆️ **Parent** | ${parentLinkMd} |`),
@@ -1269,6 +1295,7 @@ function renderIssueNote(
   projectNoteLink: string,
   componentNoteLink: string | null,
   parentLinks: string[],
+  opts: NoteRenderOptions,
 ): string {
   const sortedLabels = [...issue.labels].sort(compareStrings);
   const reportSummary = summarizeTimeReports(issue.timeReports);
@@ -1284,6 +1311,7 @@ function renderIssueNote(
     ...componentTag(issue.componentName),
     ...labelTags(sortedLabels),
   ]);
+  const externalIssueUrl = hulyIssueUrl(opts, issue);
 
   return [
     "---",
@@ -1340,6 +1368,7 @@ function renderIssueNote(
       reportSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
     yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
+    yamlScalar("huly_issue_url", externalIssueUrl),
     yamlScalar("huly_estimation_display", formatDuration(issue.estimation)),
     yamlScalar("huly_reported_display", formatDuration(issue.reportedTime)),
     yamlScalar("huly_remaining_display", formatDuration(issue.remainingTime)),
@@ -1353,6 +1382,7 @@ function renderIssueNote(
     "",
     "## Links",
     "",
+    `- Huly: ${externalIssueUrl ? `[Open in Huly](${externalIssueUrl})` : "Not available"}`,
     `- Project: ${wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim())}`,
     `- Component: ${
       componentNoteLink && issue.componentName
@@ -1426,7 +1456,7 @@ function dispatchIssueNote(
   if (opts.noteStyle === "rich") {
     return renderRichIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
   }
-  return renderIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks);
+  return renderIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
 }
 
 async function ensureFolder(vault: Vault, path: string): Promise<void> {
@@ -1483,10 +1513,16 @@ export class VaultSyncService {
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
     const rootFolder = settings.targetFolder.trim() || "huly";
+    activeWorkdayHours =
+      Number.isFinite(settings.workdayHours) && settings.workdayHours > 0
+        ? settings.workdayHours
+        : DEFAULT_WORKDAY_HOURS;
     const renderOpts: NoteRenderOptions = {
       noteStyle: settings.noteStyle ?? "rich",
       useMetaBind: settings.useMetaBind ?? true,
       rootFolder,
+      hulyUrl: settings.hulyUrl,
+      workspace: settings.workspace,
     };
     await ensureFolder(this.app.vault, rootFolder);
 

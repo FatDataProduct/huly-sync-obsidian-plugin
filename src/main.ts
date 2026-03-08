@@ -440,6 +440,26 @@ class HulySyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Workday hours")
+      .setDesc(
+        "Length of one workday used to convert Huly time fractions into real hours. " +
+        "Example: `8` means `1.0 = 8 hours`.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("8")
+          .setValue(String(this.plugin.settings.workdayHours ?? DEFAULT_SETTINGS.workdayHours))
+          .onChange(async (value) => {
+            const parsed = Number.parseFloat(value);
+            this.plugin.settings.workdayHours =
+              Number.isFinite(parsed) && parsed > 0
+                ? parsed
+                : DEFAULT_SETTINGS.workdayHours;
+            await this.plugin.persistSettings();
+          }),
+      );
+
+    new Setting(containerEl)
       .setName("Sync interval in minutes")
       .setDesc("Scheduled sync refreshes selected projects. Set `0` to disable auto sync.")
       .addText((text) =>

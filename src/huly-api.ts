@@ -162,6 +162,15 @@ const formatName = (
 
 const PROJECT_FETCH_CONCURRENCY = 3;
 const AUTHOR_LOOKUP_CONCURRENCY = 8;
+const HOUR_MS = 60 * 60 * 1000;
+
+function trackedHoursToMs(value: number | null | undefined): number {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.round(value * HOUR_MS);
+}
 
 function normalizeUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, "");
@@ -887,7 +896,7 @@ export class HulyApiClient {
               id: report._id,
               employeeName: employeeNames.get(report.employee ?? "") ?? "Unknown employee",
               date: report.date,
-              value: report.value,
+              value: trackedHoursToMs(report.value),
               description: report.description.trim(),
             });
             timeReportsByIssue.set(report.attachedTo, existing);
@@ -944,9 +953,9 @@ export class HulyApiClient {
                 componentId: issue.component,
                 componentName,
                 dueDate: issue.dueDate,
-                estimation: issue.estimation,
-                remainingTime: issue.remainingTime,
-                reportedTime: issue.reportedTime,
+                estimation: trackedHoursToMs(issue.estimation),
+                remainingTime: trackedHoursToMs(issue.remainingTime),
+                reportedTime: trackedHoursToMs(issue.reportedTime),
                 labels: labelsByIssue.get(issue._id) ?? [],
                 parents,
                 attachments: issueAttachmentsByParent.get(issue._id) ?? [],
