@@ -1,106 +1,128 @@
 # Huly Sync for Obsidian
 
-Obsidian plugin that synchronizes selected Huly projects into the current vault.
+Obsidian plugin that synchronizes selected Huly projects into the current vault and writes dashboard-friendly notes for projects, issues, components, and employees.
 
 ## Features
 
 - Select specific Huly projects for synchronization.
-- Store each project in its own vault folder under a configurable root folder.
-- Sync project notes, components, and all project issues, including `Done` and `Canceled`.
-- Add Obsidian-friendly tags for project, status, component, and Huly labels.
-- Sync task due dates and expose them as frontmatter fields for Calendar/Dataview-friendly workflows.
-- Sync task estimation, reported time, remaining time, and detailed time reports.
-- Show project-level summaries for time spent, remaining work, and employee effort.
-- Expose exact per-employee time totals in machine-readable frontmatter for Dataview.
-- Convert Huly time fractions using a configurable workday length, with `8` hours per workday by default.
+- Store synced content under a configurable root folder. Default: `huly`.
+- Sync project notes, component notes, issue notes, and employee profile notes.
+- Write employee cards into `huly/employees` with departments, statuses, vacations/absences, contacts, assigned tasks, and time-tracked tasks.
+- Sync all project issues, including closed statuses such as `Done` and `Canceled`.
+- Support both `rich` and `classic` note styles.
+- Use `Meta Bind` widgets in rich notes when `Use Meta Bind` is enabled.
+- Support configurable project note and issue note filename modes.
+- Add Obsidian-friendly tags for project, status, component, employee department, and Huly labels.
+- Expose frontmatter/properties for Dataview, calendar-style workflows, and external dashboards.
+- Sync due dates, exact time tracking, per-employee time totals, overdue/due-soon flags, and direct Huly links.
 - Support both `email + password` and `token` authentication.
 - Support custom Huly base URLs and workspace selection.
 - Pull attachments as links from issues, components, and comments.
 - Pull comments for issues and components.
-- Render wikilinks between projects, components, and parent issues.
-- Add a direct Huly link to each synced issue note.
-- Show synchronization progress in plugin settings.
-- Make scheduled sync timing more predictable and show scheduler state in settings.
+- Render wikilinks between projects, components, parent issues, and linked employee notes where possible.
+- Show synchronization progress and scheduler state in plugin settings.
 - Prefer user nicknames for assignees and comment authors, with readable full names as fallback.
-- Run manual full syncs and scheduled syncs.
+- Run manual syncs and predictable scheduled syncs.
 - Designed to run on both desktop and mobile Obsidian.
 
 ## Setup
 
 1. Open plugin settings.
-2. Set the Huly base URL. For Huly Cloud use `https://huly.app`.
-3. Choose an authentication method:
-   - `email + password`
-   - `token`
-4. Enter the workspace name.
-5. Optionally change the target folder. Default: `huly`.
-6. Load and select the projects you want to sync.
-7. Run a manual sync.
-8. Optionally set `Sync interval in minutes`:
-   - `0` disables scheduled sync completely.
-   - any positive number enables predictable periodic sync while Obsidian stays open.
-9. Optionally set `Workday hours`:
-   - default: `8`
-   - Huly raw time values are treated as decimal hours
-   - this setting controls when human-readable output should roll over into workdays
-   - example: with `8`, `8h` is displayed as `1d`
+2. Set `Huly URL`. For Huly Cloud use `https://huly.app`.
+3. Enter `Workspace` using the workspace slug expected by the Huly API.
+4. Choose `Auth method`: `Email + password` or `Token`.
+5. Enter the matching credentials.
+6. Optionally change `Target folder`. Default: `huly`.
+7. Optionally tune `Workday hours`.
+   Default: `8`. This affects day-based formatting such as `1d 2h`, while raw hour/minute fields stay based on actual tracked hours.
+8. Choose `Note style`.
+   `Rich (recommended)` adds cards, callouts, Dataview blocks, and optional Meta Bind widgets. `Classic` keeps notes plain and lightweight.
+9. If you use `Rich`, decide whether `Use Meta Bind` stays enabled.
+   Default: `on`. If enabled, rich notes use `Meta Bind` embeds/buttons. If disabled, rich notes still render but fall back to static markdown blocks.
+10. Optionally choose filename modes.
+   Project note: `Identifier + project name` or `Project name only`. Issue note: `Issue identifier only` or `Identifier + issue title`.
+11. Click `Reload projects`, select the projects you want, then run `Sync now`.
+12. Optionally set `Sync interval in minutes`.
+   `0` disables scheduled sync. Any positive number enables in-app periodic sync while Obsidian stays open.
 
 ## Current behavior
 
-- Manual sync writes project notes, component notes, and issue notes for all selected projects.
-- Scheduled sync refreshes all synced issues for all selected projects on a fixed interval while Obsidian is open.
-- Successful scheduled syncs no longer reset the timer after each run.
-- If a scheduled tick happens while another sync is already running, that tick is skipped and recorded in plugin settings instead of starting a parallel sync.
-- Plugin settings show `Next scheduled sync` plus the timestamp and status of the last scheduled attempt.
+- Manual sync writes notes for all selected projects plus related components, issues, and employee cards.
+- Scheduled sync refreshes selected projects on a fixed interval while Obsidian is open.
+- If a scheduled tick happens while another sync is running, that tick is skipped and recorded in plugin settings instead of starting a parallel sync.
+- Plugin settings show sync progress, `Next scheduled sync`, and the timestamp/status of the last scheduled attempt.
 - Synced content is written under `huly/` by default.
 - Project folders stay short and stable by project identifier.
-- By default, project notes keep the current filename format: `PROJECT Project Name.md`.
-- By default, issue notes keep the current filename format: `PROJECT-123.md`.
+- By default, project notes use `PROJECT Project Name.md`.
+- By default, issue notes use `PROJECT-123.md`.
 - Plugin settings can switch project notes to `Project Name.md` and issue notes to `PROJECT-123 Task title.md`.
+- Rich mode with `Use Meta Bind = on` also creates reusable templates in `huly/_templates/`.
 - Issue notes include due dates, time tracking, labels, attachments, comments, wikilinks, and a direct Huly URL.
 - Project notes include task lists, deadline overviews, and time tracking summaries by employee.
-- Assignees and comment authors are rendered as nicknames when available.
+- Employee notes include profile metadata, department/org-unit data, HR absences, task snapshots, and Dataview-friendly aggregate fields.
+- Assignees and comment authors are rendered as nicknames when available, with readable full names as fallback.
 - Mobile compatibility is kept by using Obsidian Vault APIs and the browser WebSocket transport from the official Huly SDK.
 
 ## Calendar and time tracking
 
-- Issue notes expose `due` in `YYYY-MM-DD` format and keep `huly_due_date` as the original ISO value.
-- This makes synced tasks easier to consume from Calendar-style plugins, Dataview tables, and other frontmatter-based workflows.
+- Issue notes expose `due` in `YYYY-MM-DD` format and keep `huly_due_date` as the original ISO-like date value.
+- This makes synced tasks easier to consume from Dataview tables, calendar-style plugins, and other frontmatter/property-based workflows.
 - Time tracking fields include estimate, reported time, remaining time, and detailed time report entries when Huly provides them.
-- Huly time values are interpreted as decimal hours and converted into real durations.
-- The `Workday hours` setting does not change the raw stored amount of time. It only affects how durations are formatted into `d/h/m` display strings and derived workday-based fields.
+- Huly tracked time values are converted into milliseconds internally and exposed again as hours/minutes/day-based display fields.
+- The `Workday hours` setting does not change raw tracked time. It only affects derived day-based formatting and fields such as `..._days`.
 - Example with `Workday hours = 8`:
-  - `1.0` -> `1h`
-  - `0.5` -> `30m`
-  - `1.9` -> `1h 54m`
-  - `10.5` -> `1d 2h 30m`
-- Project notes aggregate time reports by employee and show upcoming deadlines across project tasks.
-- Issue and project notes also expose `huly_time_by_employee` as a YAML list of objects with exact totals per reporter:
+  - `1.0` tracked hours -> `1h`
+  - `0.5` tracked hours -> `30m`
+  - `1.9` tracked hours -> `1h 54m`
+  - `10.5` tracked hours -> `1d 2h 30m`
+- Issue notes expose:
+  - `huly_is_overdue`
+  - `huly_is_due_soon`
+  - `huly_due_in_days`
+  - `huly_issue_url`
+- Issue and project notes expose `huly_time_by_employee` as a YAML list of objects with exact totals per reporter:
   - `employee_name`
   - `employee_slug`
   - `reported_time_ms`
   - `reported_time_hours`
   - `reported_time_minutes`
   - `reported_time_display`
-- Issue notes expose `huly_issue_url`, so Dataview or other plugins can open the original Huly card directly.
+- Employee notes expose dashboard-friendly fields such as:
+  - `huly_department_names`
+  - `huly_org_unit_names`
+  - `huly_employee_statuses`
+  - `huly_employee_vacations`
+  - `huly_total_reported_time_ms`
+  - `huly_assigned_open_task_count`
 
 ## Compatible plugins
 
 The current calendar integration is frontmatter-based. `Huly Sync` does not create separate calendar event files, but it writes task dates into note properties that other Obsidian plugins can read.
 
-Recommended plugins:
+Must-have for the richest note experience:
 
-- `Dataview`:
-  Best overall fit. Works directly with the generated `due` field and project/task metadata.
-- `Tasks Calendar`:
+- `Dataview`
+  Best overall fit. Works directly with generated properties such as `due`, `huly_status`, `huly_project_name`, and `huly_time_by_employee`.
+  Enable JavaScript queries if you plan to use `dataviewjs` blocks in your own dashboards.
+- `Meta Bind`
+  Recommended when `Huly Sync -> Note style = Rich` and `Use Meta Bind = on`.
+  If you do not want this dependency, turn `Use Meta Bind` off and rich notes will fall back to static markdown sections.
+
+Optional plugins:
+
+- `Calendar`
+  Useful for browsing notes by the generated `due` field, but it is not the primary integration target.
+- `Tasks Calendar`
   Can be useful if your workflow is centered around task calendars and frontmatter/date properties.
-- `Full Calendar`:
+- `Full Calendar`
   Possible, but this is a more advanced option. It is better suited to dedicated event notes, so it is not the primary target for `Huly Sync`.
+- `Bases`
+  Useful if you want additional table/card views over generated properties without writing Dataview queries by hand.
 
 Notes:
 
 - `Dataview` is the most natural companion plugin for the current implementation.
-- The official Obsidian `Calendar` plugin is not a direct task calendar integration here. It can still be useful alongside generated dashboard notes and Dataview queries.
+- `Meta Bind` is only needed for the default interactive rich-note widgets.
 - The `Tasks` plugin is not the main integration target, because `Huly Sync` generates notes with frontmatter, not markdown checklist tasks.
 
 ## Dataview examples
@@ -182,6 +204,19 @@ WHERE huly_type = "issue"
 SORT reporter.reported_time_ms DESC
 ```
 
+### Employee cards by department
+
+```dataview
+TABLE WITHOUT ID
+  file.link AS Employee,
+  huly_employee_role AS Role,
+  huly_assigned_open_task_count AS OpenTasks,
+  huly_total_reported_time_hours AS Hours
+FROM "huly/employees"
+WHERE contains(huly_department_names, "Engineering")
+SORT huly_total_reported_time_ms DESC
+```
+
 ### Huly links table
 
 ```dataview
@@ -200,13 +235,23 @@ With the default target folder, synced content looks like this:
 
 ```text
 huly/
+  _templates/
+    issue_sidebar.md
+    project_header.md
   PROJECT/
     PROJECT Project Name.md
     components/
       Component Name.md
     tasks/
       PROJECT-123.md
+  employees/
+    Jane Doe.md
 ```
+
+Notes:
+
+- `huly/_templates/` is created for rich notes when `Use Meta Bind` is enabled.
+- `employees/` contains synced employee notes used by Dataview-friendly team views.
 
 ## Mobile notes
 
