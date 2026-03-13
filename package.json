@@ -1,6 +1,6 @@
 {
   "name": "obsidian-huly-sync",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Obsidian plugin for syncing Huly projects, issues, and components into a vault.",
   "main": "main.js",
   "type": "module",
@@ -14,7 +14,7 @@
     "sync"
   ],
   "author": "Cursor",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "dependencies": {
     "@hcengineering/api-client": "^0.7.19",
     "@hcengineering/attachment": "^0.7.0",

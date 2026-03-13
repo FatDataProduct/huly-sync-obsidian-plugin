@@ -194,19 +194,19 @@ export default class HulySyncPlugin extends Plugin {
         message: "Fetching data from Huly...",
       });
 
-      const { components, issues } = await this.apiClient.fetchProjectData(
+      const { components, issues, employees } = await this.apiClient.fetchProjectData(
         this.getConnectionConfig(),
         selectedProjects,
       );
 
-      const totalWrites = selectedProjects.length + components.length + issues.length;
+      const totalWrites = selectedProjects.length + components.length + issues.length + employees.length;
       this.setSyncProgress({
         active: true,
         phase: "write",
         current: 0,
         total: totalWrites,
         percentage: 0,
-        message: `Fetched ${selectedProjects.length} projects, ${components.length} components and ${issues.length} issues.`,
+        message: `Fetched ${selectedProjects.length} projects, ${components.length} components, ${issues.length} issues and ${employees.length} employees.`,
       });
 
       const stats = await this.vaultSync.sync(
@@ -214,6 +214,7 @@ export default class HulySyncPlugin extends Plugin {
         selectedProjects,
         components,
         issues,
+        employees,
         options,
         (progress) => {
           this.setSyncProgress(progress);
@@ -227,7 +228,7 @@ export default class HulySyncPlugin extends Plugin {
       await this.persistSettings();
       this.settingsTab?.display();
 
-      const successMessage = `Synced ${stats.projectCount} projects, ${stats.componentCount} components and ${stats.issueCount} issues.`;
+      const successMessage = `Synced ${stats.projectCount} projects, ${stats.componentCount} components, ${stats.issueCount} issues and ${stats.employeeCount} employees.`;
       this.setSyncProgress({
         active: false,
         phase: "done",

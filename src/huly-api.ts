@@ -5,6 +5,7 @@ import {
   loadServerConfig,
   type PlatformClient,
 } from "@hcengineering/api-client";
+import { getClient as getAccountClient } from "@hcengineering/account-client";
 import attachmentModule from "@hcengineering/attachment";
 import chunterModule from "@hcengineering/chunter";
 import contactModule from "@hcengineering/contact";
@@ -21,6 +22,10 @@ import type {
   HulyAttachment,
   HulyComment,
   HulyComponent,
+  HulyEmployeeChannel,
+  HulyEmployeeProfile,
+  HulyEmployeeStatus,
+  HulyEmployeeVacation,
   HulyIssue,
   HulyIssueParent,
   HulyProject,
@@ -103,6 +108,78 @@ type LookupTimeSpendReport = {
   description: string;
 };
 
+type LookupPerson = {
+  _id: string;
+  name?: string;
+  city?: string;
+  birthday?: number | null;
+  profile?: string | null;
+  avatarType?: string;
+  avatarProps?: {
+    color?: string;
+    url?: string;
+  };
+};
+
+type LookupEmployee = LookupPerson & {
+  active?: boolean;
+  role?: "USER" | "GUEST";
+  position?: string | null;
+  personUuid?: string;
+  "hr:mixin:Staff"?: {
+    department?: string | null;
+  };
+};
+
+type LookupChannel = {
+  _id: string;
+  attachedTo: string;
+  provider: string;
+  value: string;
+};
+
+type LookupEmployeeStatus = {
+  _id: string;
+  attachedTo: string;
+  name: string;
+  dueDate: number | null;
+};
+
+type LookupMember = {
+  _id: string;
+  attachedTo: string;
+  contact: string;
+};
+
+type LookupOrganization = {
+  _id: string;
+  name?: string;
+  title?: string;
+};
+
+type LookupHrDepartment = {
+  _id: string;
+  name?: string;
+  parent?: string | null;
+};
+
+type LookupHrDate = {
+  day?: number;
+  month?: number;
+  year?: number;
+  offset?: number;
+};
+
+type LookupHrRequest = {
+  _id: string;
+  attachedTo: string;
+  type?: string | null;
+  department?: string | null;
+  description?: string;
+  tzDate?: LookupHrDate | null;
+  tzDueDate?: LookupHrDate | null;
+};
+
 const tracker = (trackerModule as typeof trackerModule & { default?: typeof trackerModule })
   .default ?? trackerModule;
 const attachment = (
@@ -154,6 +231,14 @@ const getPersonByPersonRef = (
     ) => Promise<{ name?: string } | null>;
   }
 ).getPersonByPersonRef;
+const getPersonRefByPersonId = (
+  contactModule as typeof contactModule & {
+    getPersonRefByPersonId?: (
+      client: PlatformClient,
+      personId: string,
+    ) => Promise<string | null>;
+  }
+).getPersonRefByPersonId;
 const formatName = (
   contactModule as typeof contactModule & {
     formatName?: (name: string, lastNameFirst?: string) => string;
@@ -163,6 +248,9 @@ const formatName = (
 const PROJECT_FETCH_CONCURRENCY = 3;
 const AUTHOR_LOOKUP_CONCURRENCY = 8;
 const HOUR_MS = 60 * 60 * 1000;
+const HR_DEPARTMENT_CLASS = "hr:class:Department";
+const HR_REQUEST_CLASS = "hr:class:Request";
+const HR_ROOT_DEPARTMENT = "hr:ids:Head";
 
 function trackedHoursToMs(value: number | null | undefined): number {
   if (value === null || value === undefined || !Number.isFinite(value)) {
@@ -185,6 +273,13 @@ function normalizeUrl(url: string): string {
   } catch {
     return trimmed;
   }
+}
+
+function compareStrings(left: string, right: string): number {
+  return left.localeCompare(right, undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
 }
 
 function ensureConnectionConfig(config: ConnectionConfig): void {
@@ -433,6 +528,436 @@ async function resolveAssigneeName(
   return formatReadableName(fallbackName) ?? fallbackName;
 }
 
+function channelKind(provider: string): string | null {
+  if (provider === contact.channelProvider.Email) {
+    return "email";
+  }
+  if (provider === contact.channelProvider.Phone) {
+    return "phone";
+  }
+  if (provider === contact.channelProvider.Homepage || provider === contact.channelProvider.Profile) {
+    return "website";
+  }
+  if (provider === contact.channelProvider.Telegram) {
+    return "telegram";
+  }
+  if (provider === contact.channelProvider.GitHub) {
+    return "github";
+  }
+
+  return null;
+}
+
+function hrDateToTimestamp(value: LookupHrDate | null | undefined): number | null {
+  if (!value?.year || !value?.month || !value?.day) {
+    return null;
+  }
+
+  return Date.UTC(value.year, value.month - 1, value.day);
+}
+
+function humanizeHrRequestType(typeId: string | null | undefined): string {
+  if (!typeId) {
+    return "HR request";
+  }
+
+  const knownNames: Record<string, string> = {
+    "hr:ids:Vacation": "Vacation days",
+    "hr:ids:PTO": "PTO",
+    "hr:ids:PTOTwo": "PTO/2",
+    "hr:ids:Sick": "Sick days",
+    "hr:ids:Overtime": "Overtime",
+    "hr:ids:OvertimeTwo": "Overtime/2",
+    "hr:ids:Remote": "Remote days",
+  };
+  if (knownNames[typeId]) {
+    return knownNames[typeId];
+  }
+
+  const rawName = typeId.split(":").pop() ?? typeId;
+  return rawName.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+}
+
+function uniqueOrdered(values: Iterable<string>): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+async function fetchHrDepartments(
+  client: PlatformClient,
+  departmentIds: string[],
+): Promise<Map<string, LookupHrDepartment>> {
+  const departmentsById = new Map<string, LookupHrDepartment>();
+  let pendingIds = Array.from(
+    new Set(departmentIds.filter((id) => id.trim().length > 0 && id !== HR_ROOT_DEPARTMENT)),
+  );
+
+  while (pendingIds.length > 0) {
+    const chunk = pendingIds.filter((id) => !departmentsById.has(id));
+    if (chunk.length === 0) {
+      break;
+    }
+
+    const departments = (await client.findAll(
+      HR_DEPARTMENT_CLASS as never,
+      {
+        _id: {
+          $in: chunk as never,
+        },
+      },
+      {
+        showArchived: true,
+      },
+    )) as unknown as LookupHrDepartment[];
+
+    pendingIds = [];
+    for (const department of departments) {
+      departmentsById.set(department._id, department);
+      if (
+        department.parent &&
+        department.parent !== HR_ROOT_DEPARTMENT &&
+        !departmentsById.has(department.parent)
+      ) {
+        pendingIds.push(department.parent);
+      }
+    }
+  }
+
+  return departmentsById;
+}
+
+function departmentChain(
+  departmentId: string | null | undefined,
+  departmentsById: ReadonlyMap<string, LookupHrDepartment>,
+): string[] {
+  if (!departmentId || departmentId === HR_ROOT_DEPARTMENT) {
+    return [];
+  }
+
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let currentId: string | null | undefined = departmentId;
+  while (currentId && currentId !== HR_ROOT_DEPARTMENT && !seen.has(currentId)) {
+    seen.add(currentId);
+    const department = departmentsById.get(currentId);
+    if (!department) {
+      break;
+    }
+    if (department.name?.trim()) {
+      names.push(department.name.trim());
+    }
+    currentId = department.parent;
+  }
+
+  return names.reverse();
+}
+
+async function resolvePrimarySocial(
+  client: PlatformClient,
+  personRef: string,
+): Promise<{
+  primarySocialType: string | null;
+  primarySocialValue: string | null;
+  primarySocialDisplay: string | null;
+  socialStrings: string[];
+}> {
+  let primarySocialType: string | null = null;
+  let primarySocialValue: string | null = null;
+  let primarySocialDisplay: string | null = null;
+  let socialStrings: string[] = [];
+
+  if (getPrimarySocialId && getSocialIdByPersonId) {
+    try {
+      const primarySocialId = await getPrimarySocialId(client, personRef);
+      if (primarySocialId) {
+        primarySocialValue = primarySocialId;
+        socialStrings = [primarySocialId];
+        const social = await getSocialIdByPersonId(client, primarySocialId);
+        primarySocialType = social?.type ?? null;
+        primarySocialDisplay =
+          formatNickname(social) ?? social?.displayValue ?? social?.value ?? primarySocialId;
+      }
+    } catch {
+      // Ignore account/social lookup issues and keep a minimal profile.
+    }
+  }
+
+  return {
+    primarySocialType,
+    primarySocialValue,
+    primarySocialDisplay,
+    socialStrings,
+  };
+}
+
+async function resolveAuthorPersonRef(
+  client: PlatformClient,
+  personId: string,
+): Promise<string | null> {
+  if (!getPersonRefByPersonId) {
+    return null;
+  }
+
+  try {
+    return await getPersonRefByPersonId(client, personId);
+  } catch {
+    return null;
+  }
+}
+
+async function fetchEmployeeProfiles(
+  client: PlatformClient,
+  accountClient: ReturnType<typeof getAccountClient>,
+  personRefs: string[],
+): Promise<HulyEmployeeProfile[]> {
+  const uniquePersonRefs = Array.from(new Set(personRefs.filter((ref) => ref.trim().length > 0)));
+  if (uniquePersonRefs.length === 0) {
+    return [];
+  }
+
+  const persons = (await client.findAll(
+    contact.class.Person,
+    {
+      _id: {
+        $in: uniquePersonRefs as never,
+      },
+    },
+    {
+      showArchived: true,
+    },
+  )) as unknown as LookupPerson[];
+
+  const employees = (await client.findAll(
+    contact.mixin.Employee,
+    {
+      _id: {
+        $in: uniquePersonRefs as never,
+      },
+    },
+    {
+      showArchived: true,
+    },
+  )) as unknown as LookupEmployee[];
+
+  const channels = (await client.findAll(
+    contact.class.Channel,
+    {
+      attachedTo: {
+        $in: uniquePersonRefs as never,
+      },
+    },
+    {
+      showArchived: true,
+    },
+  )) as unknown as LookupChannel[];
+
+  const members = (await client.findAll(
+    contact.class.Member,
+    {
+      contact: {
+        $in: uniquePersonRefs as never,
+      },
+    },
+    {
+      showArchived: true,
+    },
+  )) as unknown as LookupMember[];
+
+  const departmentIds = employees
+    .map((employee) => employee["hr:mixin:Staff"]?.department ?? null)
+    .filter((departmentId): departmentId is string => !!departmentId && departmentId.trim().length > 0);
+  const departmentsById = await fetchHrDepartments(client, departmentIds);
+
+  const organizationIds = Array.from(
+    new Set(members.map((member) => member.attachedTo).filter((value) => value.trim().length > 0)),
+  );
+  const organizations = organizationIds.length
+    ? ((await client.findAll(
+        contact.class.Contact,
+        {
+          _id: {
+            $in: organizationIds as never,
+          },
+        },
+        {
+          showArchived: true,
+        },
+      )) as unknown as LookupOrganization[])
+    : [];
+
+  const hrRequests = (await client.findAll(
+    HR_REQUEST_CLASS as never,
+    {
+      attachedTo: {
+        $in: uniquePersonRefs as never,
+      },
+    },
+    {
+      showArchived: true,
+    },
+  )) as unknown as LookupHrRequest[];
+
+  const personByRef = new Map(persons.map((person) => [person._id, person]));
+  const employeeByRef = new Map(employees.map((employee) => [employee._id, employee]));
+  const organizationById = new Map(organizations.map((organization) => [organization._id, organization]));
+  const employeeIds = employees.map((employee) => employee._id).filter((value) => value.trim().length > 0);
+  const statuses = employeeIds.length
+    ? ((await client.findAll(
+        contact.class.Status,
+        {
+          attachedTo: {
+            $in: employeeIds as never,
+          },
+        },
+        {
+          showArchived: true,
+        },
+      )) as unknown as LookupEmployeeStatus[])
+    : [];
+
+  const channelsByRef = new Map<string, HulyEmployeeChannel[]>();
+  for (const channel of channels) {
+    const existing = channelsByRef.get(channel.attachedTo) ?? [];
+    existing.push({
+      id: channel._id,
+      provider: channel.provider,
+      kind: channelKind(channel.provider),
+      value: channel.value,
+    });
+    channelsByRef.set(channel.attachedTo, existing);
+  }
+
+  const statusesByRef = new Map<string, HulyEmployeeStatus[]>();
+  for (const status of statuses) {
+    const existing = statusesByRef.get(status.attachedTo) ?? [];
+    existing.push({
+      id: status._id,
+      name: status.name,
+      dueDate: status.dueDate,
+    });
+    statusesByRef.set(status.attachedTo, existing);
+  }
+
+  const vacationsByRef = new Map<string, HulyEmployeeVacation[]>();
+  for (const request of hrRequests) {
+    const existing = vacationsByRef.get(request.attachedTo) ?? [];
+    const departmentName = request.department
+      ? departmentsById.get(request.department)?.name?.trim() ?? null
+      : null;
+    existing.push({
+      id: request._id,
+      typeId: request.type ?? null,
+      name: humanizeHrRequestType(request.type),
+      startDate: hrDateToTimestamp(request.tzDate),
+      dueDate: hrDateToTimestamp(request.tzDueDate),
+      departmentId: request.department ?? null,
+      departmentName,
+      description: renderStoredMarkup(request.description).trim(),
+    });
+    vacationsByRef.set(request.attachedTo, existing);
+  }
+
+  const departmentsByRef = new Map<string, string[]>();
+  for (const member of members) {
+    const organization = organizationById.get(member.attachedTo);
+    const organizationName = organization?.name?.trim() || organization?.title?.trim() || "";
+    if (organizationName.length === 0) {
+      continue;
+    }
+
+    const existing = departmentsByRef.get(member.contact) ?? [];
+    existing.push(organizationName);
+    departmentsByRef.set(member.contact, existing);
+  }
+
+  const profiles = await mapLimit(uniquePersonRefs, AUTHOR_LOOKUP_CONCURRENCY, async (personRef) => {
+    const person = personByRef.get(personRef);
+    const employee = employeeByRef.get(personRef) ?? null;
+    const profile = employee?.personUuid
+      ? await accountClient.getUserProfile(employee.personUuid as never).catch(() => null)
+      : null;
+    const primarySocial = await resolvePrimarySocial(client, personRef);
+    const employeeChannels = (channelsByRef.get(personRef) ?? []).sort((left, right) =>
+      compareStrings(left.kind ?? left.provider, right.kind ?? right.provider),
+    );
+    const employeeStatuses = (
+      statusesByRef.get(employee?._id ?? personRef) ?? []
+    ).sort(
+      (left, right) => (left.dueDate ?? 0) - (right.dueDate ?? 0) || compareStrings(left.name, right.name),
+    );
+    const hrDepartmentNames = departmentChain(
+      employee?.["hr:mixin:Staff"]?.department ?? null,
+      departmentsById,
+    );
+    const organizationNames = [...(departmentsByRef.get(personRef) ?? [])].sort(compareStrings);
+    const departments = uniqueOrdered([...organizationNames, ...hrDepartmentNames]);
+    const vacations = [...(vacationsByRef.get(personRef) ?? [])].sort(
+      (left, right) =>
+        (left.startDate ?? left.dueDate ?? Number.MAX_SAFE_INTEGER) -
+          (right.startDate ?? right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+        (left.dueDate ?? Number.MAX_SAFE_INTEGER) - (right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+        compareStrings(left.name, right.name),
+    );
+
+    const email =
+      employeeChannels.find((channel) => channel.kind === "email")?.value ?? null;
+    const phone =
+      employeeChannels.find((channel) => channel.kind === "phone")?.value ?? null;
+    const website =
+      profile?.website ??
+      employeeChannels.find((channel) => channel.kind === "website")?.value ??
+      null;
+
+    return {
+      id: personRef,
+      personRef,
+      employeeRef: employee?._id ?? (employee ? personRef : null),
+      personUuid: employee?.personUuid ?? null,
+      displayName:
+        formatReadableName(profile?.name ?? employee?.name ?? person?.name) ??
+        profile?.name ??
+        employee?.name ??
+        person?.name ??
+        personRef,
+      active: employee?.active ?? false,
+      role: employee?.role ?? null,
+      position: employee?.position ?? null,
+      city: profile?.city ?? person?.city ?? null,
+      birthday: person?.birthday ?? null,
+      email,
+      phone,
+      website,
+      country: profile?.country ?? null,
+      bio: profile?.bio ?? "",
+      isProfilePublic: profile?.isPublic ?? null,
+      avatarType: person?.avatarType ?? employee?.avatarType ?? null,
+      avatarUrl: person?.avatarProps?.url ?? employee?.avatarProps?.url ?? null,
+      avatarColor: person?.avatarProps?.color ?? employee?.avatarProps?.color ?? null,
+      profileRef: person?.profile ?? null,
+      primarySocialType: primarySocial.primarySocialType,
+      primarySocialValue: primarySocial.primarySocialValue,
+      primarySocialDisplay: primarySocial.primarySocialDisplay,
+      socialStrings: primarySocial.socialStrings,
+      socialLinks: profile?.socialLinks ?? {},
+      channels: employeeChannels,
+      departments,
+      statuses: employeeStatuses,
+      vacations,
+    } satisfies HulyEmployeeProfile;
+  });
+
+  return profiles.sort((left, right) => compareStrings(left.displayName, right.displayName));
+}
+
 function renderStoredMarkup(markup: string | null | undefined): string {
   if (!markup || markup.trim().length === 0) {
     return "";
@@ -578,7 +1103,7 @@ export class HulyApiClient {
   async fetchProjectData(
     config: ConnectionConfig,
     selectedProjects: HulyProject[],
-  ): Promise<{ components: HulyComponent[]; issues: HulyIssue[] }> {
+  ): Promise<{ components: HulyComponent[]; issues: HulyIssue[]; employees: HulyEmployeeProfile[] }> {
     return this.withClient(config, async (client) => {
       const normalizedUrl = normalizeUrl(config.hulyUrl);
       const serverConfig = await loadServerConfig(normalizedUrl);
@@ -587,6 +1112,7 @@ export class HulyApiClient {
         authOptions(config),
         serverConfig,
       );
+      const accountClient = getAccountClient(serverConfig.ACCOUNTS_URL, workspaceToken.token);
       const filesUrl = attachmentUrlTemplate(
         normalizedUrl,
         serverConfig.FILES_URL,
@@ -841,9 +1367,15 @@ export class HulyApiClient {
             authorIds,
             AUTHOR_LOOKUP_CONCURRENCY,
             async (authorId) =>
-              [authorId, await resolveCommentAuthorName(client, authorId)] as const,
+              [
+                authorId,
+                {
+                  name: await resolveCommentAuthorName(client, authorId),
+                  personRef: await resolveAuthorPersonRef(client, authorId),
+                },
+              ] as const,
           );
-          const authorNames = new Map(authorEntries);
+          const authorInfo = new Map(authorEntries);
 
           const typedTimeReports = timeReports as unknown as LookupTimeSpendReport[];
           const employeeRefs = Array.from(
@@ -867,9 +1399,13 @@ export class HulyApiClient {
             const map = new Map<string, HulyComment[]>();
             for (const comment of items) {
               const existing = map.get(comment.attachedTo) ?? [];
+              const info = authorInfo.get(comment.modifiedBy);
               existing.push({
                 id: comment._id,
-                authorName: authorNames.get(comment.modifiedBy) ?? comment.modifiedBy,
+                authorName: info?.name ?? comment.modifiedBy,
+                authorPersonId: comment.modifiedBy,
+                authorPersonRef: info?.personRef ?? null,
+                authorEmployeeRef: null,
                 createdAt: comment.createdOn ?? comment.modifiedOn,
                 updatedAt: comment.modifiedOn,
                 body: renderStoredMarkup(comment.message),
@@ -895,6 +1431,8 @@ export class HulyApiClient {
             existing.push({
               id: report._id,
               employeeName: employeeNames.get(report.employee ?? "") ?? "Unknown employee",
+              employeeRef: report.employee,
+              employeePersonUuid: null,
               date: report.date,
               value: trackedHoursToMs(report.value),
               description: report.description.trim(),
@@ -950,6 +1488,9 @@ export class HulyApiClient {
                 statusName,
                 priority: priorityToLabel(issue.priority),
                 assigneeName,
+                assigneePersonRef: issue.assignee,
+                assigneeEmployeeRef: null,
+                assigneePersonUuid: null,
                 componentId: issue.component,
                 componentName,
                 dueDate: issue.dueDate,
@@ -974,9 +1515,56 @@ export class HulyApiClient {
         },
       );
 
+      const components = projectResults.flatMap((result) => result.components);
+      const issues = projectResults.flatMap((result) => result.issues);
+
+      const employeeRefs = Array.from(
+        new Set(
+          issues.flatMap((issue) => {
+            const refs: string[] = [];
+            if (issue.assigneePersonRef) {
+              refs.push(issue.assigneePersonRef);
+            }
+            for (const comment of issue.comments) {
+              if (comment.authorPersonRef) {
+                refs.push(comment.authorPersonRef);
+              }
+            }
+            for (const report of issue.timeReports) {
+              if (report.employeeRef) {
+                refs.push(report.employeeRef);
+              }
+            }
+            return refs;
+          }),
+        ),
+      );
+
+      const employees = await fetchEmployeeProfiles(client, accountClient, employeeRefs);
+      const employeeByPersonRef = new Map(employees.map((employee) => [employee.personRef, employee]));
+
+      const hydratedIssues = issues.map((issue) => ({
+        ...issue,
+        assigneeEmployeeRef:
+          issue.assigneePersonRef ? employeeByPersonRef.get(issue.assigneePersonRef)?.employeeRef ?? null : null,
+        assigneePersonUuid:
+          issue.assigneePersonRef ? employeeByPersonRef.get(issue.assigneePersonRef)?.personUuid ?? null : null,
+        comments: issue.comments.map((comment) => ({
+          ...comment,
+          authorEmployeeRef:
+            comment.authorPersonRef ? employeeByPersonRef.get(comment.authorPersonRef)?.employeeRef ?? null : null,
+        })),
+        timeReports: issue.timeReports.map((report) => ({
+          ...report,
+          employeePersonUuid:
+            report.employeeRef ? employeeByPersonRef.get(report.employeeRef)?.personUuid ?? null : null,
+        })),
+      }));
+
       return {
-        components: projectResults.flatMap((result) => result.components),
-        issues: projectResults.flatMap((result) => result.issues),
+        components,
+        issues: hydratedIssues,
+        employees,
       };
     });
   }

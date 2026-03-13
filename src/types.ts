@@ -75,15 +75,76 @@ export interface HulyAttachment {
 export interface HulyComment {
   id: string;
   authorName: string;
+  authorPersonId: string;
+  authorPersonRef: string | null;
+  authorEmployeeRef: string | null;
   createdAt: number;
   updatedAt: number;
   body: string;
   attachments: HulyAttachment[];
 }
 
+export interface HulyEmployeeChannel {
+  id: string;
+  provider: string;
+  kind: string | null;
+  value: string;
+}
+
+export interface HulyEmployeeStatus {
+  id: string;
+  name: string;
+  dueDate: number | null;
+}
+
+export interface HulyEmployeeVacation {
+  id: string;
+  typeId: string | null;
+  name: string;
+  startDate: number | null;
+  dueDate: number | null;
+  departmentId: string | null;
+  departmentName: string | null;
+  description: string;
+}
+
+export interface HulyEmployeeProfile {
+  id: string;
+  personRef: string;
+  employeeRef: string | null;
+  personUuid: string | null;
+  displayName: string;
+  active: boolean;
+  role: string | null;
+  position: string | null;
+  city: string | null;
+  birthday: number | null;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+  country: string | null;
+  bio: string;
+  isProfilePublic: boolean | null;
+  avatarType: string | null;
+  avatarUrl: string | null;
+  avatarColor: string | null;
+  profileRef: string | null;
+  primarySocialType: string | null;
+  primarySocialValue: string | null;
+  primarySocialDisplay: string | null;
+  socialStrings: string[];
+  socialLinks: Record<string, string>;
+  channels: HulyEmployeeChannel[];
+  departments: string[];
+  statuses: HulyEmployeeStatus[];
+  vacations: HulyEmployeeVacation[];
+}
+
 export interface HulyTimeReport {
   id: string;
   employeeName: string;
+  employeeRef: string | null;
+  employeePersonUuid: string | null;
   date: number | null;
   value: number;
   description: string;
@@ -108,6 +169,9 @@ export interface HulyIssue {
   statusName: string;
   priority: string;
   assigneeName: string | null;
+  assigneePersonRef: string | null;
+  assigneeEmployeeRef: string | null;
+  assigneePersonUuid: string | null;
   componentId: string | null;
   componentName: string | null;
   dueDate: number | null;
@@ -142,6 +206,7 @@ export interface SyncStats {
   projectCount: number;
   componentCount: number;
   issueCount: number;
+  employeeCount: number;
 }
 
 export const DEFAULT_SETTINGS: HulySyncSettings = {

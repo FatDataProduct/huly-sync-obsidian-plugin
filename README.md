@@ -267,3 +267,9 @@ Then copy `manifest.json`, `main.js`, and `styles.css` into:
 npm install
 npm run build
 ```
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 only (`GPL-3.0-only`).
+
+See the [`LICENSE`](LICENSE) file for the full text.

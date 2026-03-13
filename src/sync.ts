@@ -10,6 +10,7 @@ import type {
   HulyAttachment,
   HulyComment,
   HulyComponent,
+  HulyEmployeeProfile,
   HulyIssue,
   HulyIssueParent,
   IssueNoteFileNameMode,
@@ -30,6 +31,7 @@ interface NoteRenderOptions {
   rootFolder: string;
   hulyUrl: string;
   workspace: string;
+  employeePathsByRef: ReadonlyMap<string, string>;
 }
 
 const WRITE_CONCURRENCY = 8;
@@ -83,6 +85,15 @@ function toIsoDate(timestamp: number | null): string | null {
 
 function toDateOnlyString(timestamp: number | null): string | null {
   return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function formatDateRange(startDate: number | null, dueDate: number | null): string | null {
+  const start = toDateOnlyString(startDate);
+  const end = toDateOnlyString(dueDate);
+  if (start && end && start !== end) {
+    return `${start} -> ${end}`;
+  }
+  return start ?? end;
 }
 
 function yamlScalarValue(value: YamlScalarValue): string {
@@ -217,6 +228,10 @@ function compareStrings(left: string, right: string): number {
 function fileStem(path: string): string {
   const name = path.split("/").pop() ?? path;
   return name.replace(/\.md$/i, "");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function isDirectChildMarkdownFile(path: string, folderPath: string): boolean {
@@ -358,6 +373,152 @@ function componentNotePath(
   );
 }
 
+function employeeFolderPath(rootFolder: string): string {
+  return joinVaultPath(rootFolder, "employees");
+}
+
+function employeeStableKey(employee: HulyEmployeeProfile): string {
+  return sanitizePathPart(employee.personUuid ?? employee.personRef, "employee");
+}
+
+function employeeDisplayStem(employee: HulyEmployeeProfile): string {
+  return sanitizePathPart(employee.displayName, employeeStableKey(employee));
+}
+
+function employeeLegacyStem(employee: HulyEmployeeProfile): string {
+  return sanitizePathPart(
+    `${employee.displayName} ${employeeStableKey(employee)}`,
+    employeeStableKey(employee),
+  );
+}
+
+function employeeNoteFileName(employee: HulyEmployeeProfile, collisionIndex = 0): string {
+  const suffix = collisionIndex > 0 ? ` ${collisionIndex + 1}` : "";
+  return `${employeeDisplayStem(employee)}${suffix}.md`;
+}
+
+function buildEmployeeNotePaths(
+  rootFolder: string,
+  employees: HulyEmployeeProfile[],
+): ReadonlyMap<string, string> {
+  const sortedEmployees = [...employees].sort(
+    (left, right) =>
+      compareStrings(left.displayName, right.displayName) ||
+      compareStrings(employeeStableKey(left), employeeStableKey(right)),
+  );
+  const totalsByStem = new Map<string, number>();
+  for (const employee of sortedEmployees) {
+    const stem = employeeDisplayStem(employee);
+    totalsByStem.set(stem, (totalsByStem.get(stem) ?? 0) + 1);
+  }
+
+  const countsByStem = new Map<string, number>();
+  const pathsByRef = new Map<string, string>();
+  for (const employee of sortedEmployees) {
+    const stem = employeeDisplayStem(employee);
+    const nextCount = (countsByStem.get(stem) ?? 0) + 1;
+    countsByStem.set(stem, nextCount);
+    const collisionIndex = (totalsByStem.get(stem) ?? 0) > 1 ? nextCount - 1 : 0;
+    pathsByRef.set(
+      employee.personRef,
+      joinVaultPath(employeeFolderPath(rootFolder), employeeNoteFileName(employee, collisionIndex)),
+    );
+  }
+
+  return pathsByRef;
+}
+
+function frontmatterScalar(content: string, key: string): string | null {
+  if (!content.startsWith("---\n")) {
+    return null;
+  }
+
+  const frontmatterEnd = content.indexOf("\n---\n", 4);
+  if (frontmatterEnd === -1) {
+    return null;
+  }
+
+  const frontmatter = content.slice(4, frontmatterEnd);
+  const match = frontmatter.match(new RegExp(`^${escapeRegExp(key)}:\\s*(.+)$`, "m"));
+  if (!match) {
+    return null;
+  }
+
+  const rawValue = match[1].trim();
+  if (rawValue.length === 0 || rawValue === "null") {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue) as unknown;
+    return typeof parsed === "string" ? parsed : parsed === null ? null : String(parsed);
+  } catch {
+    return rawValue.replace(/^['"]|['"]$/g, "");
+  }
+}
+
+async function fileMatchesEmployeeIdentity(
+  vault: Vault,
+  file: TFile,
+  employee: HulyEmployeeProfile,
+): Promise<boolean> {
+  const content = await vault.cachedRead(file);
+  return (
+    frontmatterScalar(content, "huly_person_ref") === employee.personRef ||
+    frontmatterScalar(content, "huly_employee_ref") === employee.employeeRef ||
+    frontmatterScalar(content, "huly_person_uuid") === employee.personUuid
+  );
+}
+
+async function findExistingEmployeeNote(
+  vault: Vault,
+  employeesFolder: string,
+  employee: HulyEmployeeProfile,
+  targetPath: string,
+): Promise<TFile | null> {
+  const stableKey = employeeStableKey(employee);
+  const displayStem = employeeDisplayStem(employee);
+  const legacyStem = employeeLegacyStem(employee);
+  const targetStem = fileStem(targetPath);
+  const candidates = vault
+    .getMarkdownFiles()
+    .filter((file) => isDirectChildMarkdownFile(file.path, employeesFolder))
+    .filter((file) => file.path !== targetPath)
+    .sort((left, right) => {
+      const leftStem = fileStem(left.path);
+      const rightStem = fileStem(right.path);
+      const leftScore =
+        Number(leftStem === targetStem) * 4 +
+        Number(leftStem === displayStem) * 3 +
+        Number(leftStem === legacyStem) * 2 +
+        Number(leftStem.includes(stableKey));
+      const rightScore =
+        Number(rightStem === targetStem) * 4 +
+        Number(rightStem === displayStem) * 3 +
+        Number(rightStem === legacyStem) * 2 +
+        Number(rightStem.includes(stableKey));
+      return rightScore - leftScore || compareStrings(leftStem, rightStem);
+    });
+
+  for (const candidate of candidates) {
+    if (await fileMatchesEmployeeIdentity(vault, candidate, employee)) {
+      return candidate;
+    }
+  }
+
+  return (
+    candidates.find((file) => {
+      const stem = fileStem(file.path);
+      return (
+        stem === targetStem ||
+        stem === displayStem ||
+        stem === legacyStem ||
+        stem.includes(stableKey)
+      );
+    }) ?? null
+  );
+}
+
 function findExistingProjectNote(
   vault: Vault,
   projectFolder: string,
@@ -434,7 +595,10 @@ function attachmentLinks(attachments: HulyAttachment[]): string[] {
     });
 }
 
-function renderCommentsSection(comments: HulyComment[]): string[] {
+function renderCommentsSection(
+  comments: HulyComment[],
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string[] {
   if (comments.length === 0) {
     return ["## Comments", "", "_No comments_"];
   }
@@ -445,7 +609,12 @@ function renderCommentsSection(comments: HulyComment[]): string[] {
     ...[...comments]
       .sort((left, right) => left.createdAt - right.createdAt || left.updatedAt - right.updatedAt)
       .flatMap((comment, index) => {
-        const header = `### ${index + 1}. ${comment.authorName} - ${toIsoDate(comment.updatedAt) ?? "Unknown date"}`;
+        const authorDisplay = employeeLink(
+          comment.authorName,
+          comment.authorPersonRef,
+          employeePathsByRef,
+        );
+        const header = `### ${index + 1}. ${authorDisplay} - ${toIsoDate(comment.updatedAt) ?? "Unknown date"}`;
         const attachmentSection =
           comment.attachments.length > 0
             ? ["", ...renderLinksSection("Attachments", attachmentLinks(comment.attachments))]
@@ -464,12 +633,18 @@ function renderCommentsSection(comments: HulyComment[]): string[] {
 
 type EmployeeTimeSummary = {
   employeeName: string;
+  employeeRef: string | null;
+  employeePersonUuid: string | null;
   total: number;
 };
 
 type EmployeeTimeFrontmatterEntry = {
   employee_name: string;
   employee_slug: string;
+  employee_ref: string | null;
+  employee_person_uuid: string | null;
+  employee_note: string | null;
+  employee_link: string | null;
   reported_time_ms: number;
   reported_time_hours: number;
   reported_time_minutes: number;
@@ -477,14 +652,36 @@ type EmployeeTimeFrontmatterEntry = {
 };
 
 function summarizeTimeReports(reports: HulyTimeReport[]): EmployeeTimeSummary[] {
-  const totals = new Map<string, number>();
+  const totals = new Map<string, EmployeeTimeSummary>();
   for (const report of reports) {
-    const key = report.employeeName.trim() || "Unknown employee";
-    totals.set(key, (totals.get(key) ?? 0) + report.value);
+    const key = report.employeeRef ?? (report.employeeName.trim() || "Unknown employee");
+    const existing = totals.get(key);
+    if (existing) {
+      existing.total += report.value;
+      if (!existing.employeeRef && report.employeeRef) {
+        existing.employeeRef = report.employeeRef;
+      }
+      if (!existing.employeePersonUuid && report.employeePersonUuid) {
+        existing.employeePersonUuid = report.employeePersonUuid;
+      }
+      if (
+        existing.employeeName === "Unknown employee" &&
+        report.employeeName.trim().length > 0
+      ) {
+        existing.employeeName = report.employeeName;
+      }
+      continue;
+    }
+
+    totals.set(key, {
+      employeeName: report.employeeName.trim() || "Unknown employee",
+      employeeRef: report.employeeRef,
+      employeePersonUuid: report.employeePersonUuid,
+      total: report.value,
+    });
   }
 
-  return Array.from(totals.entries())
-    .map(([employeeName, total]) => ({ employeeName, total }))
+  return Array.from(totals.values())
     .sort(
       (left, right) =>
         right.total - left.total || compareStrings(left.employeeName, right.employeeName),
@@ -501,10 +698,18 @@ function projectTimeSummary(issues: HulyIssue[]): EmployeeTimeSummary[] {
 
 function timeSummaryFrontmatter(
   summary: EmployeeTimeSummary[],
+  employeePathsByRef: ReadonlyMap<string, string>,
 ): EmployeeTimeFrontmatterEntry[] {
   return summary.map((item) => ({
     employee_name: item.employeeName,
     employee_slug: slugify(item.employeeName),
+    employee_ref: item.employeeRef,
+    employee_person_uuid: item.employeePersonUuid,
+    employee_note: item.employeeRef ? withoutExtension(employeePathsByRef.get(item.employeeRef) ?? "") || null : null,
+    employee_link:
+      item.employeeRef && employeePathsByRef.get(item.employeeRef)
+        ? wikilink(employeePathsByRef.get(item.employeeRef) ?? "", item.employeeName)
+        : null,
     reported_time_ms: item.total,
     reported_time_hours: durationToHours(item.total),
     reported_time_minutes: durationToMinutes(item.total),
@@ -524,15 +729,41 @@ function sumIssueDurations(issues: HulyIssue[]) {
   );
 }
 
-function renderTimeSummaryLines(summary: EmployeeTimeSummary[], emptyText: string): string[] {
+function employeeLink(
+  employeeName: string,
+  employeeRef: string | null,
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string {
+  if (employeeRef) {
+    const employeePath = employeePathsByRef.get(employeeRef);
+    if (employeePath) {
+      return wikilink(employeePath, employeeName);
+    }
+  }
+
+  return employeeName;
+}
+
+function renderTimeSummaryLines(
+  summary: EmployeeTimeSummary[],
+  emptyText: string,
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string[] {
   if (summary.length === 0) {
     return [emptyText];
   }
 
-  return summary.map((item) => `- ${item.employeeName}: ${formatDurationShort(item.total)}`);
+  return summary.map(
+    (item) =>
+      `- ${employeeLink(item.employeeName, item.employeeRef, employeePathsByRef)}: ${formatDurationShort(item.total)}`,
+  );
 }
 
-function renderIssueTimeReportsSection(issue: HulyIssue, title = "## Time reports"): string[] {
+function renderIssueTimeReportsSection(
+  issue: HulyIssue,
+  employeePathsByRef: ReadonlyMap<string, string>,
+  title = "## Time reports",
+): string[] {
   const summary = summarizeTimeReports(issue.timeReports);
   const lines = [
     title,
@@ -544,7 +775,7 @@ function renderIssueTimeReportsSection(issue: HulyIssue, title = "## Time report
     "",
     "### By employee",
     "",
-    ...renderTimeSummaryLines(summary, "_No time reports_"),
+    ...renderTimeSummaryLines(summary, "_No time reports_", employeePathsByRef),
   ];
 
   if (issue.timeReports.length > 0) {
@@ -557,7 +788,7 @@ function renderIssueTimeReportsSection(issue: HulyIssue, title = "## Time report
       const date = report.date ? formatReadableDatetime(report.date) : "Unknown date";
       const description = report.description.trim() || "_No description_";
       lines.push(
-        `- ${report.employeeName}: ${formatDurationShort(report.value)} on ${date}`,
+        `- ${employeeLink(report.employeeName, report.employeeRef, employeePathsByRef)}: ${formatDurationShort(report.value)} on ${date}`,
         `  - ${description}`,
       );
     }
@@ -725,7 +956,7 @@ function renderRichProjectNote(
   const totals = sumIssueDurations(issues);
   const timeSummary = projectTimeSummary(issues);
   const topReporter = topTimeReporter(timeSummary);
-  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(timeSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(timeSummary, opts.employeePathsByRef);
   const dueIssues = [...issues].filter((issue) => issue.dueDate !== null);
   const overdueOpenIssues = issues.filter(
     (issue) => !issue.isClosed && issue.dueDate !== null && (dueInDays(issue.dueDate) ?? 1) < 0,
@@ -867,7 +1098,7 @@ function renderRichProjectNote(
     "",
     "### By employee",
     "",
-    ...renderTimeSummaryLines(timeSummary, "_No time reports_"),
+    ...renderTimeSummaryLines(timeSummary, "_No time reports_", opts.employeePathsByRef),
     "",
     "### Upcoming deadlines",
     "",
@@ -962,7 +1193,7 @@ function renderRichComponentNote(
   }
 
   // -- Comments --
-  lines.push(...renderCommentsRich(component.comments));
+  lines.push(...renderCommentsRich(component.comments, opts.employeePathsByRef));
 
   return lines.join("\n");
 }
@@ -1002,7 +1233,10 @@ function renderRichIssueNote(
   const remainingDisp = formatDuration(issue.remainingTime);
   const reportSummary = summarizeTimeReports(issue.timeReports);
   const topReporter = topTimeReporter(reportSummary);
-  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(reportSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(
+    reportSummary,
+    opts.employeePathsByRef,
+  );
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
 
@@ -1013,6 +1247,14 @@ function renderRichIssueNote(
   const parentLinkMd = parentLinks.length > 0 ? parentLinks.join(", ") : "None";
   const externalIssueUrl = hulyIssueUrl(opts, issue);
   const issueLinkMd = externalIssueUrl ? `[Open in Huly](${externalIssueUrl})` : "Not available";
+  const assigneeDisplay = employeeLink(
+    issue.assigneeName ?? "Unassigned",
+    issue.assigneePersonRef,
+    opts.employeePathsByRef,
+  );
+  const assigneeNotePath = issue.assigneePersonRef
+    ? opts.employeePathsByRef.get(issue.assigneePersonRef) ?? null
+    : null;
 
   const lines: string[] = [
     "---",
@@ -1027,6 +1269,11 @@ function renderRichIssueNote(
     yamlScalar("huly_status", issue.statusName),
     yamlScalar("huly_priority", issue.priority),
     yamlScalar("huly_assignee", issue.assigneeName),
+    yamlScalar("huly_assignee_person_id", issue.assigneePersonRef),
+    yamlScalar("huly_assignee_employee_id", issue.assigneeEmployeeRef),
+    yamlScalar("huly_assignee_person_uuid", issue.assigneePersonUuid),
+    yamlScalar("huly_assignee_note", assigneeNotePath ? withoutExtension(assigneeNotePath) : null),
+    yamlScalar("huly_assignee_link", assigneeNotePath ? wikilink(assigneeNotePath, issue.assigneeName ?? "Unassigned") : null),
     yamlScalar("huly_component", issue.componentName),
     yamlScalar("huly_component_note", componentNoteLink ? withoutExtension(componentNoteLink) : null),
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
@@ -1109,7 +1356,7 @@ function renderRichIssueNote(
   lines.push(`# ${pEmoji} ${issue.identifier} ${issue.title}`.trim(), "");
 
   // -- Header bar --
-  const assigneeStr = issue.assigneeName ? `👤 ${issue.assigneeName}` : "👤 Unassigned";
+  const assigneeStr = issue.assigneeName ? `👤 ${assigneeDisplay}` : "👤 Unassigned";
   lines.push(
     `> [!huly-header|${variant}]`,
     `> ${statusDisp} · ⚡ ${issue.priority} · ${assigneeStr} · 📅 ${dueDisp}`,
@@ -1151,7 +1398,11 @@ function renderRichIssueNote(
     lines.push(L2("_No time reports_"));
   } else {
     for (const item of reportSummary) {
-      lines.push(L2(`- ${item.employeeName}: ${formatDurationShort(item.total)}`));
+      lines.push(
+        L2(
+          `- ${employeeLink(item.employeeName, item.employeeRef, opts.employeePathsByRef)}: ${formatDurationShort(item.total)}`,
+        ),
+      );
     }
   }
 
@@ -1164,7 +1415,11 @@ function renderRichIssueNote(
     })) {
       const date = report.date ? formatReadableDatetime(report.date) : "Unknown date";
       const description = report.description.trim() || "_No description_";
-      lines.push(L2(`- ${report.employeeName}: ${formatDurationShort(report.value)} on ${date}`));
+      lines.push(
+        L2(
+          `- ${employeeLink(report.employeeName, report.employeeRef, opts.employeePathsByRef)}: ${formatDurationShort(report.value)} on ${date}`,
+        ),
+      );
       lines.push(L2(`  - ${description}`));
     }
   }
@@ -1178,8 +1433,13 @@ function renderRichIssueNote(
     for (const comment of issue.comments) {
       const cDate = formatReadableDatetime(comment.updatedAt);
       const cBody = comment.body.trim() || "_Empty comment_";
+      const authorDisplay = employeeLink(
+        comment.authorName,
+        comment.authorPersonRef,
+        opts.employeePathsByRef,
+      );
       lines.push(L2(""), L2("---"), L2(""));
-      lines.push(L2(`**💬 ${comment.authorName}** · _${cDate}_`));
+      lines.push(L2(`**💬 ${authorDisplay}** · _${cDate}_`));
       lines.push(L2(""));
       lines.push(...contentToL2(cBody));
       if (comment.attachments.length > 0) {
@@ -1217,7 +1477,7 @@ function renderRichIssueNote(
       L2("|:--|:--|"),
       L2(`| 🔖 **Status** | ${statusDisp} |`),
       L2(`| ⚡ **Priority** | ${priorityDisp} |`),
-      L2(`| 👤 **Assignee** | ${issue.assigneeName ?? "Unassigned"} |`),
+      L2(`| 👤 **Assignee** | ${assigneeDisplay} |`),
       L2(`| 📅 **Due Date** | ${dueDisp} |`),
       L2(`| ⏳ **Estimate** | ${estimateDisp} |`),
       L2(`| 🕒 **Spent** | ${reportedDisp} |`),
@@ -1244,7 +1504,10 @@ function renderRichIssueNote(
 }
 
 /** Full-width comments for component notes (not inside a nested callout) */
-function renderCommentsRich(comments: HulyComment[]): string[] {
+function renderCommentsRich(
+  comments: HulyComment[],
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string[] {
   if (comments.length === 0) {
     return ["---", "", "## 💬 Comments", "", "_No comments_"];
   }
@@ -1254,11 +1517,12 @@ function renderCommentsRich(comments: HulyComment[]): string[] {
   for (const comment of comments) {
     const date = formatReadableDatetime(comment.updatedAt);
     const body = comment.body.trim() || "_Empty comment_";
+    const authorDisplay = employeeLink(comment.authorName, comment.authorPersonRef, employeePathsByRef);
 
     blocks.push(
       "---",
       "",
-      `**💬 ${comment.authorName}** · _${date}_`,
+      `**💬 ${authorDisplay}** · _${date}_`,
       "",
       body,
       "",
@@ -1287,12 +1551,16 @@ function renderProjectNote(
   issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
+  opts: NoteRenderOptions,
 ): string {
   const tags = unique(["huly", "huly/type/project", projectTag(project)]);
   const totals = sumIssueDurations(issues);
   const timeSummary = projectTimeSummary(issues);
   const topReporter = topTimeReporter(timeSummary);
-  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(timeSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(
+    timeSummary,
+    opts.employeePathsByRef,
+  );
   const dueIssues = [...issues]
     .filter((issue) => issue.dueDate !== null)
     .sort((left, right) => (left.dueDate ?? 0) - (right.dueDate ?? 0));
@@ -1345,7 +1613,7 @@ function renderProjectNote(
     "",
     "### By employee",
     "",
-    ...renderTimeSummaryLines(timeSummary, "_No time reports_"),
+    ...renderTimeSummaryLines(timeSummary, "_No time reports_", opts.employeePathsByRef),
     "",
     "## Upcoming deadlines",
     "",
@@ -1365,6 +1633,7 @@ function renderComponentNote(
   project: HulyProject,
   component: HulyComponent,
   projectNoteLink: string,
+  opts: NoteRenderOptions,
 ): string {
   const tags = unique([
     "huly",
@@ -1395,7 +1664,7 @@ function renderComponentNote(
     "",
     component.description || "No component description.",
     "",
-    ...renderCommentsSection(component.comments),
+    ...renderCommentsSection(component.comments, opts.employeePathsByRef),
   ].join("\n");
 }
 
@@ -1423,7 +1692,10 @@ function renderIssueNote(
   const sortedLabels = [...issue.labels].sort(compareStrings);
   const reportSummary = summarizeTimeReports(issue.timeReports);
   const topReporter = topTimeReporter(reportSummary);
-  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(reportSummary);
+  const timeSummaryFrontmatterRows = timeSummaryFrontmatter(
+    reportSummary,
+    opts.employeePathsByRef,
+  );
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
   const tags = unique([
@@ -1435,6 +1707,14 @@ function renderIssueNote(
     ...labelTags(sortedLabels),
   ]);
   const externalIssueUrl = hulyIssueUrl(opts, issue);
+  const assigneeDisplay = employeeLink(
+    issue.assigneeName ?? "Unassigned",
+    issue.assigneePersonRef,
+    opts.employeePathsByRef,
+  );
+  const assigneeNotePath = issue.assigneePersonRef
+    ? opts.employeePathsByRef.get(issue.assigneePersonRef) ?? null
+    : null;
 
   return [
     "---",
@@ -1448,6 +1728,11 @@ function renderIssueNote(
     yamlScalar("huly_status", issue.statusName),
     yamlScalar("huly_priority", issue.priority),
     yamlScalar("huly_assignee", issue.assigneeName),
+    yamlScalar("huly_assignee_person_id", issue.assigneePersonRef),
+    yamlScalar("huly_assignee_employee_id", issue.assigneeEmployeeRef),
+    yamlScalar("huly_assignee_person_uuid", issue.assigneePersonUuid),
+    yamlScalar("huly_assignee_note", assigneeNotePath ? withoutExtension(assigneeNotePath) : null),
+    yamlScalar("huly_assignee_link", assigneeNotePath ? wikilink(assigneeNotePath, issue.assigneeName ?? "Unassigned") : null),
     yamlScalar("huly_component", issue.componentName),
     yamlScalar(
       "huly_component_note",
@@ -1522,21 +1807,280 @@ function renderIssueNote(
     "",
     `- Status: ${issue.statusName}`,
     `- Priority: ${issue.priority}`,
-    `- Assignee: ${issue.assigneeName ?? "Unassigned"}`,
+    `- Assignee: ${assigneeDisplay}`,
     `- Due date: ${toIsoDate(issue.dueDate) ?? "Not set"}`,
     `- Estimate: ${formatDuration(issue.estimation)}`,
     `- Time spent: ${formatDuration(issue.reportedTime)}`,
     `- Remaining: ${formatDuration(issue.remainingTime)}`,
     sortedLabels.length > 0 ? `- Labels: ${sortedLabels.join(", ")}` : "- Labels: None",
     "",
-    ...renderIssueTimeReportsSection(issue),
+    ...renderIssueTimeReportsSection(issue, opts.employeePathsByRef),
     "",
     "## Description",
     "",
     issue.description.trim() || "_No description_",
     "",
-    ...renderCommentsSection(issue.comments),
+    ...renderCommentsSection(issue.comments, opts.employeePathsByRef),
   ].join("\n");
+}
+
+function employeeDepartmentTags(employee: HulyEmployeeProfile): string[] {
+  return employee.departments.map((department) => `huly/department/${slugify(department)}`);
+}
+
+function employeeStatusTags(employee: HulyEmployeeProfile): string[] {
+  return employee.vacations.length > 0 ? ["huly/employee/has-vacation"] : [];
+}
+
+function employeeMatchesTimeReport(employee: HulyEmployeeProfile, report: HulyTimeReport): boolean {
+  if (employee.personRef && report.employeeRef && employee.personRef === report.employeeRef) {
+    return true;
+  }
+  if (
+    employee.personUuid &&
+    report.employeePersonUuid &&
+    employee.personUuid === report.employeePersonUuid
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function issueLinkById(issue: HulyIssue, issuePathsById: ReadonlyMap<string, string>): string {
+  const path = issuePathsById.get(issue.id);
+  const alias = `${issue.identifier} ${issue.title}`.trim();
+  return path ? wikilink(path, alias) : alias;
+}
+
+function employeeNoteDataviewSection(employee: HulyEmployeeProfile, rootFolder: string): string[] {
+  return [
+    "## Assigned Tasks (live)",
+    "",
+    "```dataview",
+    "TABLE WITHOUT ID",
+    '  file.link AS "Task",',
+    '  huly_project_identifier AS "Project",',
+    '  huly_status AS "Status",',
+    '  due AS "Due",',
+    '  huly_updated_display AS "Updated"',
+    `FROM "${rootFolder}"`,
+    `WHERE huly_type = "issue" AND huly_assignee_person_id = "${employee.personRef}"`,
+    "SORT huly_is_closed ASC, due ASC, huly_updated_at DESC",
+    "```",
+  ];
+}
+
+function renderEmployeeNote(
+  employee: HulyEmployeeProfile,
+  assignedIssues: HulyIssue[],
+  timeTrackedIssues: HulyIssue[],
+  issuePathsById: ReadonlyMap<string, string>,
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique([
+    "huly",
+    "huly/type/employee",
+    ...employeeDepartmentTags(employee),
+    ...employeeStatusTags(employee),
+  ]);
+  const activeAssigned = assignedIssues.filter((issue) => !issue.isClosed);
+  const doneAssigned = assignedIssues.filter((issue) => issue.statusName === "Done");
+  const canceledAssigned = assignedIssues.filter((issue) => issue.statusName === "Canceled");
+  const uniqueProjects = new Set(
+    [...assignedIssues, ...timeTrackedIssues].map((issue) => issue.projectIdentifier),
+  ).size;
+  const totalReportedMs = timeTrackedIssues.reduce((sum, issue) => {
+    return (
+      sum +
+      issue.timeReports.reduce(
+        (issueSum, report) =>
+          employeeMatchesTimeReport(employee, report) ? issueSum + report.value : issueSum,
+        0,
+      )
+    );
+  }, 0);
+  const sortedStatuses = [...employee.statuses].sort(
+    (left, right) =>
+      (left.dueDate ?? Number.MAX_SAFE_INTEGER) - (right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+      compareStrings(left.name, right.name),
+  );
+  const sortedVacations = [...employee.vacations].sort(
+    (left, right) =>
+      (left.startDate ?? left.dueDate ?? Number.MAX_SAFE_INTEGER) -
+        (right.startDate ?? right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+      (left.dueDate ?? Number.MAX_SAFE_INTEGER) - (right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+      compareStrings(left.name, right.name),
+  );
+  const sortedAssigned = [...assignedIssues].sort(
+    (left, right) =>
+      Number(left.isClosed) - Number(right.isClosed) ||
+      (left.dueDate ?? Number.MAX_SAFE_INTEGER) - (right.dueDate ?? Number.MAX_SAFE_INTEGER) ||
+      right.modifiedOn - left.modifiedOn,
+  );
+  const sortedTimeTracked = [...timeTrackedIssues].sort((left, right) => right.modifiedOn - left.modifiedOn);
+
+  const lines = [
+    "---",
+    yamlList("cssclasses", ["huly-employee", "huly-card"]),
+    yamlScalar("huly_type", "employee"),
+    yamlScalar("huly_person_ref", employee.personRef),
+    yamlScalar("huly_employee_ref", employee.employeeRef),
+    yamlScalar("huly_person_uuid", employee.personUuid),
+    yamlScalar("huly_employee_name", employee.displayName),
+    yamlScalar("huly_employee_active", employee.active),
+    yamlScalar("huly_employee_role", employee.role),
+    yamlScalar("huly_employee_position", employee.position),
+    yamlScalar("huly_city", employee.city),
+    yamlScalar("huly_country", employee.country),
+    yamlScalar("huly_birthday", toIsoDate(employee.birthday)),
+    yamlScalar("huly_email", employee.email),
+    yamlScalar("huly_phone", employee.phone),
+    yamlScalar("huly_website", employee.website),
+    yamlScalar("huly_profile_public", employee.isProfilePublic),
+    yamlScalar("huly_profile_ref", employee.profileRef),
+    yamlScalar("huly_avatar_type", employee.avatarType),
+    yamlScalar("huly_avatar_url", employee.avatarUrl),
+    yamlScalar("huly_avatar_color", employee.avatarColor),
+    yamlScalar("huly_primary_social_type", employee.primarySocialType),
+    yamlScalar("huly_primary_social_value", employee.primarySocialValue),
+    yamlScalar("huly_primary_social_display", employee.primarySocialDisplay),
+    yamlList("huly_social_strings", employee.socialStrings),
+    yamlList("huly_department_names", employee.departments),
+    yamlList("huly_org_unit_names", employee.departments),
+    yamlObjectList(
+      "huly_channels",
+      employee.channels.map((channel) => ({
+        channel_id: channel.id,
+        provider: channel.provider,
+        kind: channel.kind,
+        value: channel.value,
+      })),
+    ),
+    yamlObjectList(
+      "huly_employee_statuses",
+      sortedStatuses.map((status) => ({
+        status_id: status.id,
+        status_name: status.name,
+        due_date: toIsoDate(status.dueDate),
+      })),
+    ),
+    yamlObjectList(
+      "huly_employee_vacations",
+      sortedVacations.map((vacation) => ({
+        vacation_id: vacation.id,
+        type_id: vacation.typeId,
+        vacation_name: vacation.name,
+        start_date: toIsoDate(vacation.startDate),
+        due_date: toIsoDate(vacation.dueDate),
+        department_id: vacation.departmentId,
+        department_name: vacation.departmentName,
+        description: vacation.description || null,
+      })),
+    ),
+    yamlScalar("huly_assigned_task_count", assignedIssues.length),
+    yamlScalar("huly_assigned_open_task_count", activeAssigned.length),
+    yamlScalar("huly_assigned_done_task_count", doneAssigned.length),
+    yamlScalar("huly_assigned_canceled_task_count", canceledAssigned.length),
+    yamlScalar("huly_time_task_count", timeTrackedIssues.length),
+    yamlScalar("huly_total_reported_time_ms", totalReportedMs),
+    yamlScalar("huly_total_reported_time_hours", durationToHours(totalReportedMs)),
+    yamlScalar("huly_total_reported_time_minutes", durationToMinutes(totalReportedMs)),
+    yamlScalar("huly_project_count", uniqueProjects),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# 👤 ${employee.displayName}`,
+    "",
+    "## Profile",
+    "",
+    `- Person ref: ${employee.personRef}`,
+    `- Employee ref: ${employee.employeeRef ?? "—"}`,
+    `- Person UUID: ${employee.personUuid ?? "—"}`,
+    `- Active: ${employee.active ? "Yes" : "No"}`,
+    `- Role: ${employee.role ?? "—"}`,
+    `- Position: ${employee.position ?? "—"}`,
+    `- Email: ${employee.email ?? "—"}`,
+    `- Phone: ${employee.phone ?? "—"}`,
+    `- Website: ${employee.website ?? "—"}`,
+    `- City: ${employee.city ?? "—"}`,
+    `- Country: ${employee.country ?? "—"}`,
+    `- Birthday: ${toIsoDate(employee.birthday) ?? "—"}`,
+    `- Primary social: ${employee.primarySocialDisplay ?? employee.primarySocialValue ?? "—"}`,
+    employee.avatarUrl ? `- Avatar URL: ${employee.avatarUrl}` : "- Avatar URL: —",
+    "",
+    "## Bio",
+    "",
+    employee.bio.trim() || "_No bio_",
+    "",
+    "## Departments / Teams",
+    "",
+    ...(employee.departments.length > 0
+      ? employee.departments.map((department) => `- ${department}`)
+      : ["_No org unit data_"]),
+    "",
+    "## Statuses",
+    "",
+    ...(sortedStatuses.length > 0
+      ? sortedStatuses.map((status) => `- ${status.name}${status.dueDate ? ` · until ${toIsoDate(status.dueDate)}` : ""}`)
+      : ["_No employee statuses_"]),
+    "",
+    "## Vacations / Absences",
+    "",
+    ...(sortedVacations.length > 0
+      ? sortedVacations.map((vacation) => {
+          const range = formatDateRange(vacation.startDate, vacation.dueDate);
+          const department = vacation.departmentName ? ` · ${vacation.departmentName}` : "";
+          const description = vacation.description ? ` · ${vacation.description}` : "";
+          return `- ${vacation.name}${range ? ` · ${range}` : ""}${department}${description}`;
+        })
+      : ["_No HR requests found in Huly_"]),
+    "",
+    "## Channels",
+    "",
+    ...(employee.channels.length > 0
+      ? employee.channels.map((channel) => `- ${channel.kind ?? channel.provider}: ${channel.value}`)
+      : ["_No contact channels_"]),
+    "",
+    "## Social Links",
+    "",
+    ...(Object.entries(employee.socialLinks).length > 0
+      ? Object.entries(employee.socialLinks)
+          .sort(([left], [right]) => compareStrings(left, right))
+          .map(([kind, value]) => `- ${kind}: ${value}`)
+      : ["_No public social links_"]),
+    "",
+    "## Task Summary",
+    "",
+    `- Assigned tasks: ${assignedIssues.length}`,
+    `- Open assigned tasks: ${activeAssigned.length}`,
+    `- Done assigned tasks: ${doneAssigned.length}`,
+    `- Time-tracked tasks: ${timeTrackedIssues.length}`,
+    `- Projects involved: ${uniqueProjects}`,
+    `- Total reported time: ${formatDuration(totalReportedMs)}`,
+    "",
+    ...employeeNoteDataviewSection(employee, opts.rootFolder),
+    "",
+    "## Assigned Tasks (snapshot)",
+    "",
+    ...(sortedAssigned.length > 0
+      ? sortedAssigned.map((issue) => `- ${issueLinkById(issue, issuePathsById)} · ${issue.statusName}`)
+      : ["_No assigned tasks_"]),
+    "",
+    "## Time-tracked Tasks (snapshot)",
+    "",
+    ...(sortedTimeTracked.length > 0
+      ? sortedTimeTracked.map((issue) => {
+          const issueTime = issue.timeReports.reduce(
+            (sum, report) =>
+              employeeMatchesTimeReport(employee, report) ? sum + report.value : sum,
+            0,
+          );
+          return `- ${issueLinkById(issue, issuePathsById)} · ${formatDuration(issueTime)}`;
+        })
+      : ["_No time-tracked tasks_"]),
+  ];
+
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1553,7 +2097,7 @@ function dispatchProjectNote(
   if (opts.noteStyle === "rich") {
     return renderRichProjectNote(project, issues, componentLinks, issueLinks, opts);
   }
-  return renderProjectNote(project, issues, componentLinks, issueLinks);
+  return renderProjectNote(project, issues, componentLinks, issueLinks, opts);
 }
 
 function dispatchComponentNote(
@@ -1565,7 +2109,7 @@ function dispatchComponentNote(
   if (opts.noteStyle === "rich") {
     return renderRichComponentNote(project, component, projectNoteLink, opts);
   }
-  return renderComponentNote(project, component, projectNoteLink);
+  return renderComponentNote(project, component, projectNoteLink, opts);
 }
 
 function dispatchIssueNote(
@@ -1580,6 +2124,16 @@ function dispatchIssueNote(
     return renderRichIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
   }
   return renderIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
+}
+
+function dispatchEmployeeNote(
+  employee: HulyEmployeeProfile,
+  assignedIssues: HulyIssue[],
+  timeTrackedIssues: HulyIssue[],
+  issuePathsById: ReadonlyMap<string, string>,
+  opts: NoteRenderOptions,
+): string {
+  return renderEmployeeNote(employee, assignedIssues, timeTrackedIssues, issuePathsById, opts);
 }
 
 async function ensureFolder(vault: Vault, path: string): Promise<void> {
@@ -1648,6 +2202,7 @@ export class VaultSyncService {
     projects: HulyProject[],
     components: HulyComponent[],
     issues: HulyIssue[],
+    employees: HulyEmployeeProfile[],
     _options: SyncOptions,
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
@@ -1658,14 +2213,17 @@ export class VaultSyncService {
       Number.isFinite(settings.workdayHours) && settings.workdayHours > 0
         ? settings.workdayHours
         : DEFAULT_WORKDAY_HOURS;
+    const employeePathsByRef = buildEmployeeNotePaths(rootFolder, employees);
     const renderOpts: NoteRenderOptions = {
       noteStyle: settings.noteStyle ?? "rich",
       useMetaBind: settings.useMetaBind ?? true,
       rootFolder,
       hulyUrl: settings.hulyUrl,
       workspace: settings.workspace,
+      employeePathsByRef,
     };
     await ensureFolder(this.app.vault, rootFolder);
+    await ensureFolder(this.app.vault, employeeFolderPath(rootFolder));
 
     if (renderOpts.noteStyle === "rich" && renderOpts.useMetaBind) {
       await writeTemplateFiles(this.app.vault, rootFolder);
@@ -1675,7 +2233,7 @@ export class VaultSyncService {
     const issuesByProject = new Map<string, HulyIssue[]>();
     const issuePathsById = new Map<string, string>();
     const componentPathsById = new Map<string, string>();
-    const totalWrites = projects.length + components.length + issues.length;
+    const totalWrites = projects.length + components.length + issues.length + employees.length;
     let completedWrites = 0;
 
     const reportWriteProgress = (message: string): void => {
@@ -1816,10 +2374,38 @@ export class VaultSyncService {
       });
     }
 
+    const employeesFolder = employeeFolderPath(rootFolder);
+    for (const employee of employees) {
+      const employeePath =
+        employeePathsByRef.get(employee.personRef) ??
+        joinVaultPath(employeeFolderPath(rootFolder), employeeNoteFileName(employee));
+      await renameFileIfNeeded(
+        this.app,
+        await findExistingEmployeeNote(this.app.vault, employeesFolder, employee, employeePath),
+        employeePath,
+      );
+
+      const assignedIssues = issues.filter(
+        (issue) => issue.assigneePersonRef !== null && issue.assigneePersonRef === employee.personRef,
+      );
+      const timeTrackedIssues = issues.filter((issue) =>
+        issue.timeReports.some((report) => employeeMatchesTimeReport(employee, report)),
+      );
+
+      await upsertFile(
+        this.app.vault,
+        employeePath,
+        dispatchEmployeeNote(employee, assignedIssues, timeTrackedIssues, issuePathsById, renderOpts),
+      );
+      completedWrites += 1;
+      reportWriteProgress(`Employee: ${employee.displayName}`);
+    }
+
     return {
       projectCount: projects.length,
       componentCount: components.length,
       issueCount: issues.length,
+      employeeCount: employees.length,
     };
   }
 }
