@@ -4,6 +4,7 @@ import {
   type App,
   type Vault,
 } from "obsidian";
+import filenamify from "filenamify/browser";
 
 import type {
   HulyAttachment,
@@ -11,9 +12,11 @@ import type {
   HulyComponent,
   HulyIssue,
   HulyIssueParent,
+  IssueNoteFileNameMode,
   HulyProject,
   HulyTimeReport,
   NoteStyle,
+  ProjectNoteFileNameMode,
   SyncProgress,
   HulySyncSettings,
   SyncOptions,
@@ -43,9 +46,11 @@ function slugify(value: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-function sanitizePathPart(value: string): string {
-  const cleaned = value.trim().replace(/[\\/:*?"<>|#^[\]]+/g, "-");
-  return cleaned || "untitled";
+function sanitizePathPart(value: string, fallback = "untitled"): string {
+  const cleaned = filenamify(value.trim().replace(/\s+/g, " "), {
+    replacement: "-",
+  }).trim();
+  return cleaned || fallback;
 }
 
 function joinVaultPath(...parts: string[]): string {
@@ -209,6 +214,21 @@ function compareStrings(left: string, right: string): number {
   });
 }
 
+function fileStem(path: string): string {
+  const name = path.split("/").pop() ?? path;
+  return name.replace(/\.md$/i, "");
+}
+
+function isDirectChildMarkdownFile(path: string, folderPath: string): boolean {
+  const normalizedFolder = normalizePath(folderPath);
+  const folderPrefix = `${normalizedFolder}/`;
+  if (!path.startsWith(folderPrefix) || !path.toLowerCase().endsWith(".md")) {
+    return false;
+  }
+
+  return !path.slice(folderPrefix.length).includes("/");
+}
+
 function withoutExtension(path: string): string {
   return path.replace(/\.md$/i, "");
 }
@@ -238,15 +258,76 @@ function componentTag(componentName: string | null): string[] {
   return [`huly/component/${slugify(componentName)}`];
 }
 
-function projectFolderPath(rootFolder: string, project: HulyProject): string {
-  return joinVaultPath(rootFolder, sanitizePathPart(project.identifier || project.name));
+function projectDisplayName(project: HulyProject): string {
+  const name = project.name.trim();
+  const identifier = project.identifier.trim();
+
+  return name || identifier || "Untitled project";
 }
 
-function projectNotePath(rootFolder: string, project: HulyProject): string {
-  return joinVaultPath(
-    projectFolderPath(rootFolder, project),
-    `${sanitizePathPart(`${project.identifier} ${project.name}`.trim())}.md`,
-  );
+function projectHeading(project: HulyProject): string {
+  return `${project.identifier} ${project.name}`.trim() || projectDisplayName(project);
+}
+
+function projectFolderName(project: HulyProject): string {
+  return sanitizePathPart(project.identifier || project.name, "untitled-project");
+}
+
+function projectNoteBaseName(
+  project: HulyProject,
+  mode: ProjectNoteFileNameMode,
+): string {
+  return mode === "name-only" ? projectDisplayName(project) : projectHeading(project);
+}
+
+function projectNoteFileName(
+  project: HulyProject,
+  mode: ProjectNoteFileNameMode,
+): string {
+  return `${sanitizePathPart(projectNoteBaseName(project, mode), "project")}.md`;
+}
+
+function issueNoteBaseName(issue: HulyIssue, mode: IssueNoteFileNameMode): string {
+  const title = issue.title.trim();
+  if (mode === "identifier-and-title" && title.length > 0) {
+    return `${issue.identifier} ${title}`;
+  }
+
+  return issue.identifier;
+}
+
+function issueNoteFileName(issue: HulyIssue, mode: IssueNoteFileNameMode): string {
+  return `${sanitizePathPart(issueNoteBaseName(issue, mode), issue.identifier || "issue")}.md`;
+}
+
+function projectNoteCandidateStems(project: HulyProject): Set<string> {
+  return new Set([
+    sanitizePathPart(projectNoteBaseName(project, "identifier-and-name"), "project"),
+    sanitizePathPart(projectNoteBaseName(project, "name-only"), "project"),
+    "_project",
+  ]);
+}
+
+function issueNoteCandidateStems(issue: HulyIssue): Set<string> {
+  return new Set([
+    sanitizePathPart(issueNoteBaseName(issue, "identifier-only"), issue.identifier || "issue"),
+    sanitizePathPart(
+      issueNoteBaseName(issue, "identifier-and-title"),
+      issue.identifier || "issue",
+    ),
+  ]);
+}
+
+function projectFolderPath(rootFolder: string, project: HulyProject): string {
+  return joinVaultPath(rootFolder, projectFolderName(project));
+}
+
+function projectNotePath(
+  rootFolder: string,
+  project: HulyProject,
+  mode: ProjectNoteFileNameMode,
+): string {
+  return joinVaultPath(projectFolderPath(rootFolder, project), projectNoteFileName(project, mode));
 }
 
 function projectTasksFolderPath(rootFolder: string, project: HulyProject): string {
@@ -257,11 +338,13 @@ function projectComponentsFolderPath(rootFolder: string, project: HulyProject): 
   return joinVaultPath(projectFolderPath(rootFolder, project), "components");
 }
 
-function issueNotePath(rootFolder: string, project: HulyProject, issue: HulyIssue): string {
-  return joinVaultPath(
-    projectTasksFolderPath(rootFolder, project),
-    `${sanitizePathPart(issue.identifier)}.md`,
-  );
+function issueNotePath(
+  rootFolder: string,
+  project: HulyProject,
+  issue: HulyIssue,
+  mode: IssueNoteFileNameMode,
+): string {
+  return joinVaultPath(projectTasksFolderPath(rootFolder, project), issueNoteFileName(issue, mode));
 }
 
 function componentNotePath(
@@ -273,6 +356,46 @@ function componentNotePath(
     projectComponentsFolderPath(rootFolder, project),
     `${sanitizePathPart(component.label)}.md`,
   );
+}
+
+function findExistingProjectNote(
+  vault: Vault,
+  projectFolder: string,
+  candidateStems: Set<string>,
+  targetPath: string,
+): TFile | null {
+  const candidates = vault
+    .getMarkdownFiles()
+    .filter((file) => isDirectChildMarkdownFile(file.path, projectFolder))
+    .filter((file) => candidateStems.has(fileStem(file.path)))
+    .sort((left, right) => {
+      const leftStem = fileStem(left.path);
+      const rightStem = fileStem(right.path);
+      return compareStrings(leftStem, rightStem);
+    });
+
+  return candidates.find((file) => file.path !== targetPath) ?? null;
+}
+
+function findExistingIssueNote(
+  vault: Vault,
+  tasksFolder: string,
+  candidateStems: Set<string>,
+  targetPath: string,
+): TFile | null {
+  const candidates = vault
+    .getMarkdownFiles()
+    .filter((file) => isDirectChildMarkdownFile(file.path, tasksFolder))
+    .filter((file) => candidateStems.has(fileStem(file.path)))
+    .sort((left, right) => {
+      const leftStem = fileStem(left.path);
+      const rightStem = fileStem(right.path);
+      const leftScore = leftStem === fileStem(targetPath) ? 0 : 1;
+      const rightScore = rightStem === fileStem(targetPath) ? 0 : 1;
+      return leftScore - rightScore || compareStrings(leftStem, rightStem);
+    });
+
+  return candidates.find((file) => file.path !== targetPath) ?? null;
 }
 
 function renderLinksSection(title: string, links: string[]): string[] {
@@ -645,7 +768,7 @@ function renderRichProjectNote(
     yamlList("tags", tags),
     "---",
     "",
-    `# 📂 ${project.identifier} ${project.name}`.trim(),
+    `# 📂 ${projectHeading(project)}`.trim(),
     "",
   ];
 
@@ -1210,7 +1333,7 @@ function renderProjectNote(
     yamlList("tags", tags),
     "---",
     "",
-    `# ${project.identifier} ${project.name}`.trim(),
+    `# ${projectHeading(project)}`.trim(),
     "",
     project.description || "No project description.",
     "",
@@ -1501,6 +1624,22 @@ async function deleteFileIfExists(vault: Vault, path: string): Promise<void> {
   }
 }
 
+async function renameFileIfNeeded(
+  app: App,
+  currentFile: TFile | null,
+  targetPath: string,
+): Promise<void> {
+  if (!currentFile || currentFile.path === targetPath) {
+    return;
+  }
+
+  if (app.vault.getAbstractFileByPath(targetPath)) {
+    return;
+  }
+
+  await app.fileManager.renameFile(currentFile, targetPath);
+}
+
 export class VaultSyncService {
   constructor(private readonly app: App) {}
 
@@ -1513,6 +1652,8 @@ export class VaultSyncService {
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
     const rootFolder = settings.targetFolder.trim() || "huly";
+    const projectNoteFileNameMode = settings.projectNoteFileNameMode ?? "identifier-and-name";
+    const issueNoteFileNameMode = settings.issueNoteFileNameMode ?? "identifier-only";
     activeWorkdayHours =
       Number.isFinite(settings.workdayHours) && settings.workdayHours > 0
         ? settings.workdayHours
@@ -1567,7 +1708,10 @@ export class VaultSyncService {
       }
 
       for (const issue of issuesByProject.get(project.id) ?? []) {
-        issuePathsById.set(issue.id, issueNotePath(rootFolder, project, issue));
+        issuePathsById.set(
+          issue.id,
+          issueNotePath(rootFolder, project, issue, issueNoteFileNameMode),
+        );
       }
     }
 
@@ -1575,7 +1719,7 @@ export class VaultSyncService {
       const projectFolder = projectFolderPath(rootFolder, project);
       const tasksFolder = projectTasksFolderPath(rootFolder, project);
       const componentsFolder = projectComponentsFolderPath(rootFolder, project);
-      const projectNote = projectNotePath(rootFolder, project);
+      const projectNote = projectNotePath(rootFolder, project, projectNoteFileNameMode);
       const legacyProjectNote = joinVaultPath(projectFolder, "_project.md");
       const projectComponents = componentsByProject.get(project.id) ?? [];
       const projectIssues = issuesByProject.get(project.id) ?? [];
@@ -1583,6 +1727,16 @@ export class VaultSyncService {
       await ensureFolder(this.app.vault, projectFolder);
       await ensureFolder(this.app.vault, tasksFolder);
       await ensureFolder(this.app.vault, componentsFolder);
+      await renameFileIfNeeded(
+        this.app,
+        findExistingProjectNote(
+          this.app.vault,
+          projectFolder,
+          projectNoteCandidateStems(project),
+          projectNote,
+        ),
+        projectNote,
+      );
       if (legacyProjectNote !== projectNote) {
         await deleteFileIfExists(this.app.vault, legacyProjectNote);
       }
@@ -1599,7 +1753,8 @@ export class VaultSyncService {
         .sort((left, right) => compareStrings(left.identifier, right.identifier))
         .map((issue) =>
           wikilink(
-            issuePathsById.get(issue.id) ?? issueNotePath(rootFolder, project, issue),
+            issuePathsById.get(issue.id) ??
+              issueNotePath(rootFolder, project, issue, issueNoteFileNameMode),
             `${issue.identifier} ${issue.title}`.trim(),
           ),
         );
@@ -1626,11 +1781,23 @@ export class VaultSyncService {
 
       await mapLimit(projectIssues, WRITE_CONCURRENCY, async (issue) => {
         const issuePath =
-          issuePathsById.get(issue.id) ?? issueNotePath(rootFolder, project, issue);
+          issuePathsById.get(issue.id) ??
+          issueNotePath(rootFolder, project, issue, issueNoteFileNameMode);
         const componentNoteLink = issue.componentId
           ? componentPathsById.get(issue.componentId) ?? null
           : null;
         const linksToParents = parentIssueLinks(issue.parents, issuePathsById);
+
+        await renameFileIfNeeded(
+          this.app,
+          findExistingIssueNote(
+            this.app.vault,
+            tasksFolder,
+            issueNoteCandidateStems(issue),
+            issuePath,
+          ),
+          issuePath,
+        );
 
         await upsertFile(
           this.app.vault,

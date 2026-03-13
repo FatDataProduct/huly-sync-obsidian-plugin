@@ -13,7 +13,9 @@ import {
   DEFAULT_SETTINGS,
   type ConnectionConfig,
   type HulyProject,
+  type IssueNoteFileNameMode,
   type NoteStyle,
+  type ProjectNoteFileNameMode,
   type ScheduledSyncStatus,
   type SyncProgress,
   type HulySyncSettings,
@@ -554,6 +556,45 @@ class HulySyncSettingTab extends PluginSettingTab {
         cls: "huly-sync-muted",
       });
     }
+
+    containerEl.createEl("h3", { text: "File naming" });
+
+    new Setting(containerEl)
+      .setName("Project note filename")
+      .setDesc(
+        "Choose how the main project note is named. Default keeps the current format: `TG-AU TG-Autoposting.md`.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("identifier-and-name", "Identifier + project name")
+          .addOption("name-only", "Project name only")
+          .setValue(
+            this.plugin.settings.projectNoteFileNameMode ??
+              DEFAULT_SETTINGS.projectNoteFileNameMode,
+          )
+          .onChange(async (value) => {
+            this.plugin.settings.projectNoteFileNameMode = value as ProjectNoteFileNameMode;
+            await this.plugin.persistSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Issue note filename")
+      .setDesc(
+        "Choose how issue files are named. Default keeps the current format: `TG-AU-100.md`.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("identifier-only", "Issue identifier only")
+          .addOption("identifier-and-title", "Identifier + issue title")
+          .setValue(
+            this.plugin.settings.issueNoteFileNameMode ?? DEFAULT_SETTINGS.issueNoteFileNameMode,
+          )
+          .onChange(async (value) => {
+            this.plugin.settings.issueNoteFileNameMode = value as IssueNoteFileNameMode;
+            await this.plugin.persistSettings();
+          }),
+      );
 
     containerEl.createEl("h3", { text: "Connection" });
 

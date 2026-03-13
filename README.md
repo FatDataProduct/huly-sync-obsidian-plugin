@@ -53,7 +53,10 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault.
 - If a scheduled tick happens while another sync is already running, that tick is skipped and recorded in plugin settings instead of starting a parallel sync.
 - Plugin settings show `Next scheduled sync` plus the timestamp and status of the last scheduled attempt.
 - Synced content is written under `huly/` by default.
-- Project notes use descriptive filenames like `PN Project Name.md`.
+- Project folders stay short and stable by project identifier.
+- By default, project notes keep the current filename format: `PROJECT Project Name.md`.
+- By default, issue notes keep the current filename format: `PROJECT-123.md`.
+- Plugin settings can switch project notes to `Project Name.md` and issue notes to `PROJECT-123 Task title.md`.
 - Issue notes include due dates, time tracking, labels, attachments, comments, wikilinks, and a direct Huly URL.
 - Project notes include task lists, deadline overviews, and time tracking summaries by employee.
 - Assignees and comment authors are rendered as nicknames when available.
@@ -202,7 +205,7 @@ huly/
     components/
       Component Name.md
     tasks/
-      PROJECT-123 Task title.md
+      PROJECT-123.md
 ```
 
 ## Mobile notes

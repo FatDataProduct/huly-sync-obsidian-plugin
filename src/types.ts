@@ -2,6 +2,10 @@ export type AuthMethod = "password" | "token";
 
 export type NoteStyle = "classic" | "rich";
 
+export type ProjectNoteFileNameMode = "identifier-and-name" | "name-only";
+
+export type IssueNoteFileNameMode = "identifier-only" | "identifier-and-title";
+
 export type ScheduledSyncStatus = "idle" | "success" | "error" | "skipped";
 
 export interface StoredProjectConfig {
@@ -24,6 +28,8 @@ export interface HulySyncSettings {
   syncIntervalMinutes: number;
   noteStyle: NoteStyle;
   useMetaBind: boolean;
+  projectNoteFileNameMode: ProjectNoteFileNameMode;
+  issueNoteFileNameMode: IssueNoteFileNameMode;
   projects: StoredProjectConfig[];
   lastSyncAt: string | null;
   lastScheduledSyncAt: string | null;
@@ -150,6 +156,8 @@ export const DEFAULT_SETTINGS: HulySyncSettings = {
   syncIntervalMinutes: 15,
   noteStyle: "rich",
   useMetaBind: true,
+  projectNoteFileNameMode: "identifier-and-name",
+  issueNoteFileNameMode: "identifier-only",
   projects: [],
   lastSyncAt: null,
   lastScheduledSyncAt: null,
