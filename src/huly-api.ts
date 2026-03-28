@@ -14,6 +14,8 @@ import tagsModule from "@hcengineering/tags";
 import { jsonToHTML, markupToJSON, stripTags } from "@hcengineering/text";
 import { markupToMarkdown } from "@hcengineering/text-markdown";
 import trackerModule, {
+  IssuePriority,
+  MilestoneStatus,
   type IssueStatus,
 } from "@hcengineering/tracker";
 
@@ -28,6 +30,9 @@ import type {
   HulyEmployeeVacation,
   HulyIssue,
   HulyIssueParent,
+  HulyIssueTemplate,
+  HulyIssueTemplateChild,
+  HulyMilestone,
   HulyProject,
   HulyTimeReport,
 } from "./types";
@@ -42,6 +47,11 @@ type LookupIssue = {
   priority: IssuePriority;
   assignee: string | null;
   component: string | null;
+  milestone?: string | null;
+  template?: {
+    template: string;
+    childId?: string;
+  } | null;
   dueDate: number | null;
   estimation: number;
   remainingTime: number;
@@ -57,7 +67,50 @@ type LookupIssue = {
     status?: { name?: string };
     assignee?: { name?: string };
     component?: { label?: string };
+    milestone?: { label?: string };
   };
+};
+
+type LookupMilestone = {
+  _id: string;
+  label: string;
+  description?: string | null;
+  status: MilestoneStatus;
+  targetDate: number;
+  modifiedOn: number;
+};
+
+type LookupIssueTemplate = {
+  _id: string;
+  title: string;
+  description?: string | null;
+  priority: IssuePriority;
+  assignee: string | null;
+  component: string | null;
+  milestone: string | null;
+  estimation: number;
+  modifiedOn: number;
+  labels?: string[] | null;
+  children: Array<{
+    id: string;
+    title: string;
+    description?: string | null;
+    priority: IssuePriority;
+    assignee: string | null;
+    component: string | null;
+    milestone: string | null;
+    estimation: number;
+  }>;
+  $lookup?: {
+    component?: { label?: string };
+    assignee?: { name?: string };
+    milestone?: { label?: string };
+  };
+};
+
+type LookupTagElement = {
+  _id: string;
+  title: string;
 };
 
 type LookupTagReference = {
@@ -191,9 +244,6 @@ const contact = (contactModule as typeof contactModule & { default?: typeof cont
   .default ?? contactModule;
 const tags = (tagsModule as typeof tagsModule & { default?: typeof tagsModule })
   .default ?? tagsModule;
-const IssuePriority = (trackerModule as typeof trackerModule & {
-  IssuePriority?: typeof trackerModule.IssuePriority;
-}).IssuePriority ?? tracker.IssuePriority;
 const getPersonByPersonId = (
   contactModule as typeof contactModule & {
     getPersonByPersonId?: (
@@ -313,6 +363,21 @@ function priorityToLabel(priority: IssuePriority): string {
     case IssuePriority.NoPriority:
     default:
       return "No priority";
+  }
+}
+
+function milestoneStatusToLabel(status: MilestoneStatus): string {
+  switch (status) {
+    case MilestoneStatus.Planned:
+      return "Planned";
+    case MilestoneStatus.InProgress:
+      return "In Progress";
+    case MilestoneStatus.Completed:
+      return "Completed";
+    case MilestoneStatus.Canceled:
+      return "Canceled";
+    default:
+      return "Unknown";
   }
 }
 
@@ -917,14 +982,19 @@ async function fetchEmployeeProfiles(
       employeeChannels.find((channel) => channel.kind === "website")?.value ??
       null;
 
+    const accountProfileName =
+      profile && typeof profile === "object" && "name" in profile
+        ? String((profile as { name?: unknown }).name ?? "").trim() || undefined
+        : undefined;
+
     return {
       id: personRef,
       personRef,
       employeeRef: employee?._id ?? (employee ? personRef : null),
       personUuid: employee?.personUuid ?? null,
       displayName:
-        formatReadableName(profile?.name ?? employee?.name ?? person?.name) ??
-        profile?.name ??
+        formatReadableName(accountProfileName ?? employee?.name ?? person?.name) ??
+        accountProfileName ??
         employee?.name ??
         person?.name ??
         personRef,
@@ -989,10 +1059,18 @@ function renderStoredMarkup(markup: string | null | undefined): string {
   }
 }
 
-async function fetchIssueDescription(
+type TrackerMarkupClass =
+  | typeof tracker.class.Issue
+  | typeof tracker.class.IssueTemplate
+  | typeof tracker.class.Milestone;
+
+async function fetchMarkupFieldMarkdown(
   client: PlatformClient,
-  issueId: string,
-  markupRef: string | null,
+  objectClass: TrackerMarkupClass,
+  objectId: string,
+  attribute: string,
+  markupRef: string | null | undefined,
+  label: string,
 ): Promise<string> {
   if (!markupRef) {
     return "";
@@ -1001,9 +1079,9 @@ async function fetchIssueDescription(
   try {
     return cleanupMarkdown(
       await client.fetchMarkup(
-        tracker.class.Issue,
-        issueId as never,
-        "description",
+        objectClass,
+        objectId as never,
+        attribute,
         markupRef as never,
         "markdown",
       ),
@@ -1013,28 +1091,43 @@ async function fetchIssueDescription(
 
     try {
       const html = await client.fetchMarkup(
-        tracker.class.Issue,
-        issueId as never,
-        "description",
+        objectClass,
+        objectId as never,
+        attribute,
         markupRef as never,
         "html",
       );
 
       return [
         "> [!warning] Huly markup fallback",
-        "> Description contains unsupported rich-text marks for Markdown export.",
+        "> Rich text contains unsupported marks for Markdown export.",
         "",
         html,
       ].join("\n");
     } catch {
       return [
         "> [!warning] Huly markup fallback",
-        `> Failed to convert issue description from Huly markup: ${message}`,
+        `> Failed to convert ${label} from Huly markup: ${message}`,
         "",
-        "_Original description could not be rendered by the current Huly SDK._",
+        "_Original rich text could not be rendered by the current Huly SDK._",
       ].join("\n");
     }
   }
+}
+
+async function fetchIssueDescription(
+  client: PlatformClient,
+  issueId: string,
+  markupRef: string | null,
+): Promise<string> {
+  return fetchMarkupFieldMarkdown(
+    client,
+    tracker.class.Issue,
+    issueId,
+    "description",
+    markupRef,
+    "issue description",
+  );
 }
 
 export class HulyApiClient {
@@ -1103,7 +1196,13 @@ export class HulyApiClient {
   async fetchProjectData(
     config: ConnectionConfig,
     selectedProjects: HulyProject[],
-  ): Promise<{ components: HulyComponent[]; issues: HulyIssue[]; employees: HulyEmployeeProfile[] }> {
+  ): Promise<{
+    components: HulyComponent[];
+    issues: HulyIssue[];
+    employees: HulyEmployeeProfile[];
+    milestones: HulyMilestone[];
+    issueTemplates: HulyIssueTemplate[];
+  }> {
     return this.withClient(config, async (client) => {
       const normalizedUrl = normalizeUrl(config.hulyUrl);
       const serverConfig = await loadServerConfig(normalizedUrl);
@@ -1123,7 +1222,7 @@ export class HulyApiClient {
         selectedProjects,
         PROJECT_FETCH_CONCURRENCY,
         async (project) => {
-          const [components, issues] = await Promise.all([
+          const [components, issues, milestones, issueTemplates] = await Promise.all([
             client.findAll(
               tracker.class.Component,
               {
@@ -1149,6 +1248,36 @@ export class HulyApiClient {
                   status: tracker.class.IssueStatus,
                   assignee: contact.class.Person,
                   component: tracker.class.Component,
+                  milestone: tracker.class.Milestone,
+                },
+                showArchived: true,
+              },
+            ),
+            client.findAll(
+              tracker.class.Milestone,
+              {
+                space: project.id as never,
+              },
+              {
+                sort: {
+                  targetDate: SortingOrder.Ascending,
+                },
+                showArchived: true,
+              },
+            ),
+            client.findAll(
+              tracker.class.IssueTemplate,
+              {
+                space: project.id as never,
+              },
+              {
+                sort: {
+                  modifiedOn: SortingOrder.Descending,
+                },
+                lookup: {
+                  component: tracker.class.Component,
+                  assignee: contact.class.Person,
+                  milestone: tracker.class.Milestone,
                 },
                 showArchived: true,
               },
@@ -1157,8 +1286,23 @@ export class HulyApiClient {
 
           const typedIssues = issues as unknown as LookupIssue[];
           const typedComponents = components as unknown as LookupComponent[];
+          const typedMilestones = milestones as unknown as LookupMilestone[];
+          const typedIssueTemplates = issueTemplates as unknown as LookupIssueTemplate[];
+
+          const milestoneLabelById = new Map(
+            typedMilestones.map((item) => [item._id, item.label] as const),
+          );
+          const componentLabelById = new Map(
+            typedComponents.map((item) => [item._id, item.label] as const),
+          );
+          const templateTitleById = new Map(
+            typedIssueTemplates.map((item) => [item._id, item.title] as const),
+          );
+
           const issueIds = typedIssues.map((issue) => issue._id);
           const componentIds = typedComponents.map((component) => component._id);
+          const milestoneIds = typedMilestones.map((item) => item._id);
+          const templateIds = typedIssueTemplates.map((item) => item._id);
 
           const [
             issueComments,
@@ -1281,12 +1425,123 @@ export class HulyApiClient {
               : Promise.resolve([]),
           ]);
 
+          const templateLabelRefs = Array.from(
+            new Set(typedIssueTemplates.flatMap((tpl) => tpl.labels ?? [])),
+          );
+
+          const [
+            milestoneComments,
+            templateComments,
+            milestoneAttachments,
+            templateAttachments,
+            templateTagElements,
+          ] = await Promise.all([
+            milestoneIds.length
+              ? client.findAll(
+                  chunter.class.ChatMessage,
+                  {
+                    attachedToClass: tracker.class.Milestone,
+                    attachedTo: {
+                      $in: milestoneIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      modifiedOn: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            templateIds.length
+              ? client.findAll(
+                  chunter.class.ChatMessage,
+                  {
+                    attachedToClass: tracker.class.IssueTemplate,
+                    attachedTo: {
+                      $in: templateIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      modifiedOn: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            milestoneIds.length
+              ? client.findAll(
+                  attachment.class.Attachment,
+                  {
+                    attachedToClass: tracker.class.Milestone,
+                    attachedTo: {
+                      $in: milestoneIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      name: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            templateIds.length
+              ? client.findAll(
+                  attachment.class.Attachment,
+                  {
+                    attachedToClass: tracker.class.IssueTemplate,
+                    attachedTo: {
+                      $in: templateIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      name: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            templateLabelRefs.length
+              ? client.findAll(
+                  tags.class.TagElement,
+                  {
+                    _id: {
+                      $in: templateLabelRefs as never,
+                    },
+                  },
+                  {
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+          ]);
+
           const typedIssueComments = issueComments as unknown as LookupComment[];
           const typedComponentComments = componentComments as unknown as LookupComment[];
+          const typedMilestoneComments = milestoneComments as unknown as LookupComment[];
+          const typedTemplateComments = templateComments as unknown as LookupComment[];
           const issueCommentIds = typedIssueComments.map((comment) => comment._id);
           const componentCommentIds = typedComponentComments.map((comment) => comment._id);
+          const milestoneCommentIds = typedMilestoneComments.map((comment) => comment._id);
+          const templateCommentIds = typedTemplateComments.map((comment) => comment._id);
 
-          const [issueCommentAttachments, componentCommentAttachments] = await Promise.all([
+          const tagTitleById = new Map(
+            (templateTagElements as unknown as LookupTagElement[]).map((el) => [el._id, el.title] as const),
+          );
+
+          const [
+            issueCommentAttachments,
+            componentCommentAttachments,
+            milestoneCommentAttachments,
+            templateCommentAttachments,
+          ] = await Promise.all([
             issueCommentIds.length
               ? client.findAll(
                   attachment.class.Attachment,
@@ -1312,6 +1567,42 @@ export class HulyApiClient {
                     attachedToClass: chunter.class.ChatMessage,
                     attachedTo: {
                       $in: componentCommentIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      name: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            milestoneCommentIds.length
+              ? client.findAll(
+                  attachment.class.Attachment,
+                  {
+                    attachedToClass: chunter.class.ChatMessage,
+                    attachedTo: {
+                      $in: milestoneCommentIds as never,
+                    },
+                    space: project.id as never,
+                  },
+                  {
+                    sort: {
+                      name: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            templateCommentIds.length
+              ? client.findAll(
+                  attachment.class.Attachment,
+                  {
+                    attachedToClass: chunter.class.ChatMessage,
+                    attachedTo: {
+                      $in: templateCommentIds as never,
                     },
                     space: project.id as never,
                   },
@@ -1357,10 +1648,27 @@ export class HulyApiClient {
           const componentCommentAttachmentsByParent = toAttachmentMap(
             componentCommentAttachments as unknown as LookupAttachment[],
           );
+          const milestoneDocAttachmentsByParent = toAttachmentMap(
+            milestoneAttachments as unknown as LookupAttachment[],
+          );
+          const templateDocAttachmentsByParent = toAttachmentMap(
+            templateAttachments as unknown as LookupAttachment[],
+          );
+          const milestoneCommentAttachmentsByParent = toAttachmentMap(
+            milestoneCommentAttachments as unknown as LookupAttachment[],
+          );
+          const templateCommentAttachmentsByParent = toAttachmentMap(
+            templateCommentAttachments as unknown as LookupAttachment[],
+          );
 
           const authorIds = Array.from(
             new Set(
-              [...typedIssueComments, ...typedComponentComments].map((comment) => comment.modifiedBy),
+              [
+                ...typedIssueComments,
+                ...typedComponentComments,
+                ...typedMilestoneComments,
+                ...typedTemplateComments,
+              ].map((comment) => comment.modifiedBy),
             ),
           );
           const authorEntries = await mapLimit(
@@ -1424,6 +1732,14 @@ export class HulyApiClient {
             typedIssueComments,
             issueCommentAttachmentsByParent,
           );
+          const milestoneCommentsByParent = toCommentsMap(
+            typedMilestoneComments,
+            milestoneCommentAttachmentsByParent,
+          );
+          const templateCommentsByParent = toCommentsMap(
+            typedTemplateComments,
+            templateCommentAttachmentsByParent,
+          );
 
           const timeReportsByIssue = new Map<string, HulyTimeReport[]>();
           for (const report of typedTimeReports) {
@@ -1449,6 +1765,40 @@ export class HulyApiClient {
 
           const descriptionByIssue = new Map(descriptions);
 
+          const milestoneDescriptionEntries = await Promise.all(
+            typedMilestones.map(async (item) =>
+              [
+                item._id,
+                await fetchMarkupFieldMarkdown(
+                  client,
+                  tracker.class.Milestone,
+                  item._id,
+                  "description",
+                  item.description,
+                  "milestone description",
+                ),
+              ] as const,
+            ),
+          );
+          const descriptionByMilestone = new Map(milestoneDescriptionEntries);
+
+          const templateDescriptionEntries = await Promise.all(
+            typedIssueTemplates.map(async (item) =>
+              [
+                item._id,
+                await fetchMarkupFieldMarkdown(
+                  client,
+                  tracker.class.IssueTemplate,
+                  item._id,
+                  "description",
+                  item.description,
+                  "template description",
+                ),
+              ] as const,
+            ),
+          );
+          const descriptionByTemplate = new Map(templateDescriptionEntries);
+
           const mappedComponents: HulyComponent[] = typedComponents.map((component) => ({
             id: component._id,
             projectId: project.id,
@@ -1460,10 +1810,85 @@ export class HulyApiClient {
             modifiedOn: component.modifiedOn,
           }));
 
+          const mappedMilestones: HulyMilestone[] = typedMilestones.map((item) => ({
+            id: item._id,
+            projectId: project.id,
+            projectIdentifier: project.identifier,
+            label: item.label,
+            description: descriptionByMilestone.get(item._id) ?? "",
+            statusName: milestoneStatusToLabel(item.status),
+            targetDate:
+              Number.isFinite(item.targetDate) && item.targetDate > 0 ? item.targetDate : null,
+            modifiedOn: item.modifiedOn,
+            attachments: milestoneDocAttachmentsByParent.get(item._id) ?? [],
+            comments: milestoneCommentsByParent.get(item._id) ?? [],
+          }));
+
+          const mappedIssueTemplates: HulyIssueTemplate[] = await Promise.all(
+            typedIssueTemplates.map(async (tpl) => {
+              const assigneeName = await resolveAssigneeName(
+                client,
+                tpl.assignee,
+                tpl.$lookup?.assignee?.name ?? null,
+              );
+              const componentName =
+                tpl.$lookup?.component?.label ??
+                (tpl.component ? componentLabelById.get(tpl.component) ?? null : null);
+              const milestoneLabel =
+                tpl.$lookup?.milestone?.label ??
+                (tpl.milestone ? milestoneLabelById.get(tpl.milestone) ?? null : null);
+              const children: HulyIssueTemplateChild[] = await Promise.all(
+                (tpl.children ?? []).map(async (child) => {
+                  const childAssigneeName = await resolveAssigneeName(client, child.assignee, null);
+                  return {
+                    id: child.id,
+                    title: child.title,
+                    description: renderStoredMarkup(child.description),
+                    priority: priorityToLabel(child.priority),
+                    assigneeName: childAssigneeName,
+                    assigneePersonRef: child.assignee,
+                    componentName: child.component ? componentLabelById.get(child.component) ?? null : null,
+                    milestoneLabel: child.milestone ? milestoneLabelById.get(child.milestone) ?? null : null,
+                    estimation: trackedHoursToMs(child.estimation),
+                  };
+                }),
+              );
+
+              const templateLabelTitles = (tpl.labels ?? [])
+                .map((ref) => tagTitleById.get(ref) ?? ref)
+                .filter((title) => title.trim().length > 0)
+                .sort(compareStrings);
+
+              return {
+                id: tpl._id,
+                projectId: project.id,
+                projectIdentifier: project.identifier,
+                title: tpl.title,
+                description: descriptionByTemplate.get(tpl._id) ?? "",
+                priority: priorityToLabel(tpl.priority),
+                assigneeName,
+                assigneePersonRef: tpl.assignee,
+                componentName,
+                milestoneLabel,
+                estimation: trackedHoursToMs(tpl.estimation),
+                modifiedOn: tpl.modifiedOn,
+                labels: templateLabelTitles,
+                attachments: templateDocAttachmentsByParent.get(tpl._id) ?? [],
+                comments: templateCommentsByParent.get(tpl._id) ?? [],
+                children,
+              };
+            }),
+          );
+
           const mappedIssues: HulyIssue[] = await Promise.all(
             typedIssues.map(async (issue) => {
               const statusName = issue.$lookup?.status?.name ?? issue.status;
               const componentName = issue.$lookup?.component?.label ?? null;
+              const milestoneId = issue.milestone ?? null;
+              const milestoneLabel =
+                issue.$lookup?.milestone?.label ??
+                (milestoneId ? milestoneLabelById.get(milestoneId) ?? null : null);
+              const templateRef = issue.template?.template ?? null;
               const parents: HulyIssueParent[] = (issue.parents ?? []).map((parent) => ({
                 parentId: parent.parentId,
                 identifier: parent.identifier,
@@ -1493,6 +1918,11 @@ export class HulyApiClient {
                 assigneePersonUuid: null,
                 componentId: issue.component,
                 componentName,
+                milestoneId,
+                milestoneLabel,
+                issueTemplateId: templateRef,
+                issueTemplateTitle: templateRef ? templateTitleById.get(templateRef) ?? null : null,
+                issueTemplateChildId: issue.template?.childId ?? null,
                 dueDate: issue.dueDate,
                 estimation: trackedHoursToMs(issue.estimation),
                 remainingTime: trackedHoursToMs(issue.remainingTime),
@@ -1511,16 +1941,20 @@ export class HulyApiClient {
           return {
             components: mappedComponents,
             issues: mappedIssues,
+            milestones: mappedMilestones,
+            issueTemplates: mappedIssueTemplates,
           };
         },
       );
 
       const components = projectResults.flatMap((result) => result.components);
       const issues = projectResults.flatMap((result) => result.issues);
+      const milestones = projectResults.flatMap((result) => result.milestones);
+      const issueTemplates = projectResults.flatMap((result) => result.issueTemplates);
 
       const employeeRefs = Array.from(
-        new Set(
-          issues.flatMap((issue) => {
+        new Set([
+          ...issues.flatMap((issue) => {
             const refs: string[] = [];
             if (issue.assigneePersonRef) {
               refs.push(issue.assigneePersonRef);
@@ -1537,11 +1971,49 @@ export class HulyApiClient {
             }
             return refs;
           }),
-        ),
+          ...issueTemplates.flatMap((template) => {
+            const refs: string[] = [];
+            if (template.assigneePersonRef) {
+              refs.push(template.assigneePersonRef);
+            }
+            for (const child of template.children) {
+              if (child.assigneePersonRef) {
+                refs.push(child.assigneePersonRef);
+              }
+            }
+            for (const comment of template.comments) {
+              if (comment.authorPersonRef) {
+                refs.push(comment.authorPersonRef);
+              }
+            }
+            return refs;
+          }),
+          ...milestones.flatMap((milestone) =>
+            milestone.comments
+              .map((comment) => comment.authorPersonRef)
+              .filter((ref): ref is string => ref !== null),
+          ),
+        ]),
       );
 
       const employees = await fetchEmployeeProfiles(client, accountClient, employeeRefs);
       const employeeByPersonRef = new Map(employees.map((employee) => [employee.personRef, employee]));
+
+      const hydrateCommentAuthors = (comment: HulyComment): HulyComment => ({
+        ...comment,
+        authorEmployeeRef:
+          comment.authorPersonRef ? employeeByPersonRef.get(comment.authorPersonRef)?.employeeRef ?? null : null,
+      });
+
+      const hydratedMilestones = milestones.map((milestone) => ({
+        ...milestone,
+        comments: milestone.comments.map(hydrateCommentAuthors),
+      }));
+
+      const hydratedIssueTemplates = issueTemplates.map((template) => ({
+        ...template,
+        comments: template.comments.map(hydrateCommentAuthors),
+      }));
 
       const hydratedIssues = issues.map((issue) => ({
         ...issue,
@@ -1549,11 +2021,7 @@ export class HulyApiClient {
           issue.assigneePersonRef ? employeeByPersonRef.get(issue.assigneePersonRef)?.employeeRef ?? null : null,
         assigneePersonUuid:
           issue.assigneePersonRef ? employeeByPersonRef.get(issue.assigneePersonRef)?.personUuid ?? null : null,
-        comments: issue.comments.map((comment) => ({
-          ...comment,
-          authorEmployeeRef:
-            comment.authorPersonRef ? employeeByPersonRef.get(comment.authorPersonRef)?.employeeRef ?? null : null,
-        })),
+        comments: issue.comments.map(hydrateCommentAuthors),
         timeReports: issue.timeReports.map((report) => ({
           ...report,
           employeePersonUuid:
@@ -1565,6 +2033,8 @@ export class HulyApiClient {
         components,
         issues: hydratedIssues,
         employees,
+        milestones: hydratedMilestones,
+        issueTemplates: hydratedIssueTemplates,
       };
     });
   }

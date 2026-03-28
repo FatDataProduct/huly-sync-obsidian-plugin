@@ -13,6 +13,8 @@ import type {
   HulyEmployeeProfile,
   HulyIssue,
   HulyIssueParent,
+  HulyIssueTemplate,
+  HulyMilestone,
   IssueNoteFileNameMode,
   HulyProject,
   HulyTimeReport,
@@ -273,6 +275,14 @@ function componentTag(componentName: string | null): string[] {
   return [`huly/component/${slugify(componentName)}`];
 }
 
+function milestoneTag(milestoneLabel: string | null): string[] {
+  if (!milestoneLabel) {
+    return [];
+  }
+
+  return [`huly/milestone/${slugify(milestoneLabel)}`];
+}
+
 function projectDisplayName(project: HulyProject): string {
   const name = project.name.trim();
   const identifier = project.identifier.trim();
@@ -333,6 +343,20 @@ function issueNoteCandidateStems(issue: HulyIssue): Set<string> {
   ]);
 }
 
+function milestoneNoteCandidateStems(milestone: HulyMilestone): Set<string> {
+  return new Set([
+    sanitizePathPart(`${milestone.label} ${milestone.id.slice(-8)}`, "milestone"),
+    sanitizePathPart(milestone.label, "milestone"),
+  ]);
+}
+
+function issueTemplateNoteCandidateStems(template: HulyIssueTemplate): Set<string> {
+  return new Set([
+    sanitizePathPart(`${template.title} ${template.id.slice(-8)}`, "template"),
+    sanitizePathPart(template.title, "template"),
+  ]);
+}
+
 function projectFolderPath(rootFolder: string, project: HulyProject): string {
   return joinVaultPath(rootFolder, projectFolderName(project));
 }
@@ -351,6 +375,44 @@ function projectTasksFolderPath(rootFolder: string, project: HulyProject): strin
 
 function projectComponentsFolderPath(rootFolder: string, project: HulyProject): string {
   return joinVaultPath(projectFolderPath(rootFolder, project), "components");
+}
+
+function projectMilestonesFolderPath(rootFolder: string, project: HulyProject): string {
+  return joinVaultPath(projectFolderPath(rootFolder, project), "milestones");
+}
+
+function projectIssueTemplatesFolderPath(rootFolder: string, project: HulyProject): string {
+  return joinVaultPath(projectFolderPath(rootFolder, project), "issue-templates");
+}
+
+function milestoneNoteFileName(milestone: HulyMilestone): string {
+  return `${sanitizePathPart(`${milestone.label} ${milestone.id.slice(-8)}`, "milestone")}.md`;
+}
+
+function milestoneNotePath(
+  rootFolder: string,
+  project: HulyProject,
+  milestone: HulyMilestone,
+): string {
+  return joinVaultPath(
+    projectMilestonesFolderPath(rootFolder, project),
+    milestoneNoteFileName(milestone),
+  );
+}
+
+function issueTemplateNoteFileName(template: HulyIssueTemplate): string {
+  return `${sanitizePathPart(`${template.title} ${template.id.slice(-8)}`, "template")}.md`;
+}
+
+function issueTemplateNotePath(
+  rootFolder: string,
+  project: HulyProject,
+  template: HulyIssueTemplate,
+): string {
+  return joinVaultPath(
+    projectIssueTemplatesFolderPath(rootFolder, project),
+    issueTemplateNoteFileName(template),
+  );
 }
 
 function issueNotePath(
@@ -444,7 +506,12 @@ function frontmatterScalar(content: string, key: string): string | null {
     return null;
   }
 
-  const rawValue = match[1].trim();
+  const captured = match[1];
+  if (captured === undefined) {
+    return null;
+  }
+
+  const rawValue = captured.trim();
   if (rawValue.length === 0 || rawValue === "null") {
     return null;
   }
@@ -547,6 +614,48 @@ function findExistingIssueNote(
   const candidates = vault
     .getMarkdownFiles()
     .filter((file) => isDirectChildMarkdownFile(file.path, tasksFolder))
+    .filter((file) => candidateStems.has(fileStem(file.path)))
+    .sort((left, right) => {
+      const leftStem = fileStem(left.path);
+      const rightStem = fileStem(right.path);
+      const leftScore = leftStem === fileStem(targetPath) ? 0 : 1;
+      const rightScore = rightStem === fileStem(targetPath) ? 0 : 1;
+      return leftScore - rightScore || compareStrings(leftStem, rightStem);
+    });
+
+  return candidates.find((file) => file.path !== targetPath) ?? null;
+}
+
+function findExistingMilestoneNote(
+  vault: Vault,
+  milestonesFolder: string,
+  candidateStems: Set<string>,
+  targetPath: string,
+): TFile | null {
+  const candidates = vault
+    .getMarkdownFiles()
+    .filter((file) => isDirectChildMarkdownFile(file.path, milestonesFolder))
+    .filter((file) => candidateStems.has(fileStem(file.path)))
+    .sort((left, right) => {
+      const leftStem = fileStem(left.path);
+      const rightStem = fileStem(right.path);
+      const leftScore = leftStem === fileStem(targetPath) ? 0 : 1;
+      const rightScore = rightStem === fileStem(targetPath) ? 0 : 1;
+      return leftScore - rightScore || compareStrings(leftStem, rightStem);
+    });
+
+  return candidates.find((file) => file.path !== targetPath) ?? null;
+}
+
+function findExistingIssueTemplateNote(
+  vault: Vault,
+  templatesFolder: string,
+  candidateStems: Set<string>,
+  targetPath: string,
+): TFile | null {
+  const candidates = vault
+    .getMarkdownFiles()
+    .filter((file) => isDirectChildMarkdownFile(file.path, templatesFolder))
     .filter((file) => candidateStems.has(fileStem(file.path)))
     .sort((left, right) => {
       const leftStem = fileStem(left.path);
@@ -689,7 +798,8 @@ function summarizeTimeReports(reports: HulyTimeReport[]): EmployeeTimeSummary[] 
 }
 
 function topTimeReporter(summary: EmployeeTimeSummary[]): EmployeeTimeSummary | null {
-  return summary.length > 0 ? summary[0] : null;
+  const first = summary[0];
+  return first ?? null;
 }
 
 function projectTimeSummary(issues: HulyIssue[]): EmployeeTimeSummary[] {
@@ -876,6 +986,8 @@ function issueSidebarTemplate(): string {
     "| ⌛ **Remaining** | `VIEW[{huly_remaining_display}][text]` |",
     "| 🏷️ **Labels** | `VIEW[{huly_labels_display}][text]` |",
     "| 🔄 **Updated** | `VIEW[{huly_updated_display}][text]` |",
+    "| 🎯 **Milestone** | `VIEW[{huly_milestone_display}][text(renderMarkdown)]` |",
+    "| 📄 **Template** | `VIEW[{huly_issue_template_display}][text(renderMarkdown)]` |",
     "",
     "---",
     "",
@@ -885,6 +997,8 @@ function issueSidebarTemplate(): string {
     "|:--|:--|",
     "| 📂 **Project** | `VIEW[{huly_project_link}][text(renderMarkdown)]` |",
     "| 🧩 **Component** | `VIEW[{huly_component_link}][text(renderMarkdown)]` |",
+    "| 🎯 **Milestone** | `VIEW[{huly_milestone_display}][text(renderMarkdown)]` |",
+    "| 📄 **Issue template** | `VIEW[{huly_issue_template_display}][text(renderMarkdown)]` |",
     "| ⬆️ **Parent** | `VIEW[{huly_parent_link}][text(renderMarkdown)]` |",
     "",
     "---",
@@ -947,6 +1061,8 @@ function renderRichProjectNote(
   issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
+  milestoneLinks: string[],
+  issueTemplateLinks: string[],
   opts: NoteRenderOptions,
 ): string {
   const tags = unique(["huly", "huly/type/project", projectTag(project)]);
@@ -971,6 +1087,8 @@ function renderRichProjectNote(
     yamlScalar("huly_project_name", project.name),
     yamlScalar("huly_component_count", componentLinks.length),
     yamlScalar("huly_task_count", issueLinks.length),
+    yamlScalar("huly_milestone_count", milestoneLinks.length),
+    yamlScalar("huly_issue_template_count", issueTemplateLinks.length),
     yamlScalar("huly_total_estimation_ms", totals.estimation),
     yamlScalar("huly_total_estimation_hours", durationToHours(totals.estimation)),
     yamlScalar("huly_total_estimation_minutes", durationToMinutes(totals.estimation)),
@@ -1118,6 +1236,31 @@ function renderRichProjectNote(
     lines.push("");
   }
 
+  lines.push(
+    "---",
+    "",
+    "## 🎯 Milestones",
+    "",
+  );
+  if (milestoneLinks.length === 0) {
+    lines.push("_No milestones_", "");
+  } else {
+    for (const link of milestoneLinks) {
+      lines.push(`- ${link}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("---", "", "## 📄 Issue templates", "", "");
+  if (issueTemplateLinks.length === 0) {
+    lines.push("_No issue templates_", "");
+  } else {
+    for (const link of issueTemplateLinks) {
+      lines.push(`- ${link}`);
+    }
+    lines.push("");
+  }
+
   // -- Full task list fallback (in case Dataview is not installed) --
   lines.push(
     "---",
@@ -1204,6 +1347,8 @@ function renderRichIssueNote(
   projectNoteLink: string,
   componentNoteLink: string | null,
   parentLinks: string[],
+  milestoneNoteLink: string | null,
+  issueTemplateNoteLink: string | null,
   opts: NoteRenderOptions,
 ): string {
   const sortedLabels = [...issue.labels].sort(compareStrings);
@@ -1213,6 +1358,7 @@ function renderRichIssueNote(
     projectTag(project),
     statusTag(issue.statusName),
     ...componentTag(issue.componentName),
+    ...milestoneTag(issue.milestoneLabel),
     ...labelTags(sortedLabels),
   ]);
 
@@ -1243,6 +1389,14 @@ function renderRichIssueNote(
   const componentDisplay = componentNoteLink && issue.componentName
     ? wikilink(componentNoteLink, issue.componentName)
     : issue.componentName ?? "—";
+  const milestoneDisplay =
+    milestoneNoteLink && issue.milestoneLabel
+      ? wikilink(milestoneNoteLink, issue.milestoneLabel)
+      : issue.milestoneLabel ?? "—";
+  const issueTemplateDisplay =
+    issueTemplateNoteLink && issue.issueTemplateTitle
+      ? wikilink(issueTemplateNoteLink, issue.issueTemplateTitle)
+      : issue.issueTemplateTitle ?? "—";
   const projectLinkMd = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
   const parentLinkMd = parentLinks.length > 0 ? parentLinks.join(", ") : "None";
   const externalIssueUrl = hulyIssueUrl(opts, issue);
@@ -1276,6 +1430,28 @@ function renderRichIssueNote(
     yamlScalar("huly_assignee_link", assigneeNotePath ? wikilink(assigneeNotePath, issue.assigneeName ?? "Unassigned") : null),
     yamlScalar("huly_component", issue.componentName),
     yamlScalar("huly_component_note", componentNoteLink ? withoutExtension(componentNoteLink) : null),
+    yamlScalar("huly_milestone_id", issue.milestoneId),
+    yamlScalar("huly_milestone", issue.milestoneLabel),
+    yamlScalar("huly_milestone_note", milestoneNoteLink ? withoutExtension(milestoneNoteLink) : null),
+    yamlScalar(
+      "huly_milestone_link",
+      milestoneNoteLink && issue.milestoneLabel
+        ? wikilink(milestoneNoteLink, issue.milestoneLabel)
+        : null,
+    ),
+    yamlScalar("huly_issue_template_id", issue.issueTemplateId),
+    yamlScalar("huly_issue_template_title", issue.issueTemplateTitle),
+    yamlScalar(
+      "huly_issue_template_note",
+      issueTemplateNoteLink ? withoutExtension(issueTemplateNoteLink) : null,
+    ),
+    yamlScalar(
+      "huly_issue_template_link",
+      issueTemplateNoteLink && issue.issueTemplateTitle
+        ? wikilink(issueTemplateNoteLink, issue.issueTemplateTitle)
+        : null,
+    ),
+    yamlScalar("huly_issue_template_child_id", issue.issueTemplateChildId),
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
     yamlScalar("due", toDateOnlyString(issue.dueDate)),
     yamlScalar("huly_estimation_ms", issue.estimation),
@@ -1330,6 +1506,8 @@ function renderRichIssueNote(
     yamlScalar("huly_issue_link", issueLinkMd),
     yamlScalar("huly_project_link", projectLinkMd),
     yamlScalar("huly_component_link", componentDisplay),
+    yamlScalar("huly_milestone_display", milestoneDisplay),
+    yamlScalar("huly_issue_template_display", issueTemplateDisplay),
     yamlScalar("huly_parent_link", parentLinkMd),
     yamlList("tags", tags),
     "---",
@@ -1484,6 +1662,8 @@ function renderRichIssueNote(
       L2(`| ⌛ **Remaining** | ${remainingDisp} |`),
       L2(`| 🏷️ **Labels** | ${labelsInline} |`),
       L2(`| 🔄 **Updated** | ${updatedDisp} |`),
+      L2(`| 🎯 **Milestone** | ${milestoneDisplay} |`),
+      L2(`| 📄 **Template** | ${issueTemplateDisplay} |`),
       L2(""),
       L2("---"),
       L2(""),
@@ -1494,6 +1674,8 @@ function renderRichIssueNote(
       L2(`| 🔗 **Huly** | ${issueLinkMd} |`),
       L2(`| 📂 **Project** | ${projectLinkMd} |`),
       L2(`| 🧩 **Component** | ${componentDisplay} |`),
+      L2(`| 🎯 **Milestone** | ${milestoneDisplay} |`),
+      L2(`| 📄 **Issue template** | ${issueTemplateDisplay} |`),
       L2(`| ⬆️ **Parent** | ${parentLinkMd} |`),
     );
   }
@@ -1551,6 +1733,8 @@ function renderProjectNote(
   issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
+  milestoneLinks: string[],
+  issueTemplateLinks: string[],
   opts: NoteRenderOptions,
 ): string {
   const tags = unique(["huly", "huly/type/project", projectTag(project)]);
@@ -1624,6 +1808,10 @@ function renderProjectNote(
     ...renderLinksSection("## Components", componentLinks),
     "",
     ...renderLinksSection("## Tasks", issueLinks),
+    "",
+    ...renderLinksSection("## Milestones", milestoneLinks),
+    "",
+    ...renderLinksSection("## Issue templates", issueTemplateLinks),
   ];
 
   return body.join("\n");
@@ -1668,6 +1856,356 @@ function renderComponentNote(
   ].join("\n");
 }
 
+function milestoneTasksDataview(
+  rootFolder: string,
+  project: HulyProject,
+  milestone: HulyMilestone,
+): string[] {
+  const tasksFolder = projectTasksFolderPath(rootFolder, project);
+  return [
+    "## Tasks",
+    "",
+    "```dataview",
+    "TABLE WITHOUT ID",
+    '  file.link AS "Task",',
+    '  huly_status AS "Status",',
+    '  huly_priority AS "Priority",',
+    '  due AS "Due"',
+    `FROM "${tasksFolder}"`,
+    `WHERE huly_type = "issue" AND huly_milestone_id = "${milestone.id}"`,
+    "SORT huly_is_closed ASC, due ASC",
+    "```",
+    "",
+  ];
+}
+
+function issueTemplateIssuesDataview(
+  rootFolder: string,
+  project: HulyProject,
+  template: HulyIssueTemplate,
+): string[] {
+  const tasksFolder = projectTasksFolderPath(rootFolder, project);
+  return [
+    "## Issues from this template",
+    "",
+    "```dataview",
+    "TABLE WITHOUT ID",
+    '  file.link AS "Task",',
+    '  huly_status AS "Status",',
+    '  due AS "Due"',
+    `FROM "${tasksFolder}"`,
+    `WHERE huly_type = "issue" AND huly_issue_template_id = "${template.id}"`,
+    "SORT huly_is_closed ASC, due ASC",
+    "```",
+    "",
+  ];
+}
+
+function renderMilestoneNote(
+  project: HulyProject,
+  milestone: HulyMilestone,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique([
+    "huly",
+    "huly/type/milestone",
+    projectTag(project),
+    ...milestoneTag(milestone.label),
+  ]);
+  const targetDisp = toDateOnlyString(milestone.targetDate) ?? "Not set";
+
+  return [
+    "---",
+    yamlScalar("huly_type", "milestone"),
+    yamlScalar("huly_milestone_id", milestone.id),
+    yamlScalar("huly_milestone_label", milestone.label),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_milestone_status", milestone.statusName),
+    yamlScalar("huly_target_date", toIsoDate(milestone.targetDate)),
+    yamlScalar("due", toDateOnlyString(milestone.targetDate)),
+    yamlScalar("huly_updated_at", toIsoDate(milestone.modifiedOn)),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# ${milestone.label}`,
+    "",
+    "## Links",
+    "",
+    `- Project: ${wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim())}`,
+    "",
+    `- Status: ${milestone.statusName}`,
+    `- Target date: ${targetDisp}`,
+    "",
+    "## Description",
+    "",
+    milestone.description.trim() || "_No description_",
+    "",
+    ...renderLinksSection("## Attachments", attachmentLinks(milestone.attachments)),
+    "",
+    ...renderCommentsSection(milestone.comments, opts.employeePathsByRef),
+    "",
+    ...milestoneTasksDataview(opts.rootFolder, project, milestone),
+  ].join("\n");
+}
+
+function renderRichMilestoneNote(
+  project: HulyProject,
+  milestone: HulyMilestone,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  const tags = unique([
+    "huly",
+    "huly/type/milestone",
+    projectTag(project),
+    ...milestoneTag(milestone.label),
+  ]);
+  const projectDisplay = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
+  const targetDisp = toDateOnlyString(milestone.targetDate) ?? "Not set";
+  const updatedDisplay = formatReadableDatetime(milestone.modifiedOn);
+
+  const lines: string[] = [
+    "---",
+    yamlList("cssclasses", ["huly-milestone", "huly-card"]),
+    yamlScalar("huly_type", "milestone"),
+    yamlScalar("huly_milestone_id", milestone.id),
+    yamlScalar("huly_milestone_label", milestone.label),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_milestone_status", milestone.statusName),
+    yamlScalar("huly_target_date", toIsoDate(milestone.targetDate)),
+    yamlScalar("due", toDateOnlyString(milestone.targetDate)),
+    yamlScalar("huly_updated_at", toIsoDate(milestone.modifiedOn)),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# 🎯 ${milestone.label}`,
+    "",
+    `> [!huly-header]`,
+    `> 📂 ${projectDisplay} · ${milestone.statusName} · 📅 ${targetDisp} · 🔄 ${updatedDisplay}`,
+    "",
+    "---",
+    "",
+    "## 📝 Description",
+    "",
+    milestone.description.trim() || "_No description_",
+    "",
+  ];
+
+  if (milestone.attachments.length > 0) {
+    lines.push("---", "", "## 📎 Attachments", "");
+    for (const att of milestone.attachments) {
+      const meta = [att.mimeType, humanFileSize(att.size)]
+        .filter((p) => p.trim().length > 0)
+        .join(", ");
+      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(...renderCommentsRich(milestone.comments, opts.employeePathsByRef));
+  lines.push(...milestoneTasksDataview(opts.rootFolder, project, milestone));
+
+  return lines.join("\n");
+}
+
+function renderIssueTemplateNote(
+  project: HulyProject,
+  template: HulyIssueTemplate,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  const sortedLabels = [...template.labels].sort(compareStrings);
+  const tags = unique([
+    "huly",
+    "huly/type/issue-template",
+    projectTag(project),
+    ...labelTags(sortedLabels),
+  ]);
+  const assigneeDisplay = employeeLink(
+    template.assigneeName ?? "Unassigned",
+    template.assigneePersonRef,
+    opts.employeePathsByRef,
+  );
+  const labelsDisp = sortedLabels.length > 0 ? sortedLabels.join(", ") : "None";
+  const labelsInline = sortedLabels.length > 0
+    ? sortedLabels.map((l) => `\`${l}\``).join(" ")
+    : "—";
+
+  const lines: string[] = [
+    "---",
+    yamlScalar("huly_type", "issue-template"),
+    yamlScalar("huly_issue_template_id", template.id),
+    yamlScalar("huly_issue_template_title", template.title),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_priority", template.priority),
+    yamlScalar("huly_assignee", template.assigneeName),
+    yamlScalar("huly_assignee_person_id", template.assigneePersonRef),
+    yamlScalar("huly_component", template.componentName),
+    yamlScalar("huly_milestone", template.milestoneLabel),
+    yamlScalar("huly_estimation_ms", template.estimation),
+    yamlScalar("huly_estimation_display", formatDuration(template.estimation)),
+    yamlScalar("huly_updated_at", toIsoDate(template.modifiedOn)),
+    yamlList("huly_labels", sortedLabels),
+    yamlScalar("huly_labels_display", labelsDisp),
+    yamlScalar("huly_labels_inline", labelsInline),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# ${template.title}`,
+    "",
+    "## Metadata",
+    "",
+    `- Priority: ${template.priority}`,
+    `- Assignee: ${assigneeDisplay}`,
+    `- Component: ${template.componentName ?? "None"}`,
+    `- Milestone: ${template.milestoneLabel ?? "None"}`,
+    `- Estimate: ${formatDuration(template.estimation)}`,
+    sortedLabels.length > 0 ? `- Labels: ${sortedLabels.join(", ")}` : "- Labels: None",
+    "",
+    "## Description",
+    "",
+    template.description.trim() || "_No description_",
+    "",
+  ];
+
+  if (template.children.length > 0) {
+    lines.push("## Subtask templates", "");
+    for (const child of template.children) {
+      lines.push(`### ${child.title}`, "");
+      lines.push(`- Priority: ${child.priority}`);
+      lines.push(
+        `- Assignee: ${employeeLink(
+          child.assigneeName ?? "Unassigned",
+          child.assigneePersonRef,
+          opts.employeePathsByRef,
+        )}`,
+      );
+      lines.push(`- Component: ${child.componentName ?? "None"}`);
+      lines.push(`- Milestone: ${child.milestoneLabel ?? "None"}`);
+      lines.push(`- Estimate: ${formatDuration(child.estimation)}`);
+      lines.push("");
+      lines.push(child.description.trim() || "_No description_");
+      lines.push("");
+    }
+  }
+
+  lines.push(
+    ...renderLinksSection("## Attachments", attachmentLinks(template.attachments)),
+    "",
+    ...renderCommentsSection(template.comments, opts.employeePathsByRef),
+    "",
+  );
+  lines.push(...issueTemplateIssuesDataview(opts.rootFolder, project, template));
+
+  return lines.join("\n");
+}
+
+function renderRichIssueTemplateNote(
+  project: HulyProject,
+  template: HulyIssueTemplate,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  const sortedLabels = [...template.labels].sort(compareStrings);
+  const tags = unique([
+    "huly",
+    "huly/type/issue-template",
+    projectTag(project),
+    ...labelTags(sortedLabels),
+  ]);
+  const projectDisplay = wikilink(projectNoteLink, `${project.identifier} ${project.name}`.trim());
+  const assigneeDisplay = employeeLink(
+    template.assigneeName ?? "Unassigned",
+    template.assigneePersonRef,
+    opts.employeePathsByRef,
+  );
+  const updatedDisplay = formatReadableDatetime(template.modifiedOn);
+  const labelsDisp = sortedLabels.length > 0 ? sortedLabels.join(", ") : "None";
+  const labelsInline = sortedLabels.length > 0
+    ? sortedLabels.map((l) => `\`${l}\``).join(" ")
+    : "—";
+
+  const lines: string[] = [
+    "---",
+    yamlList("cssclasses", ["huly-issue-template", "huly-card"]),
+    yamlScalar("huly_type", "issue-template"),
+    yamlScalar("huly_issue_template_id", template.id),
+    yamlScalar("huly_issue_template_title", template.title),
+    yamlScalar("huly_project_id", project.id),
+    yamlScalar("huly_project_identifier", project.identifier),
+    yamlScalar("huly_project_note", withoutExtension(projectNoteLink)),
+    yamlScalar("huly_priority", template.priority),
+    yamlScalar("huly_assignee", template.assigneeName),
+    yamlScalar("huly_assignee_person_id", template.assigneePersonRef),
+    yamlScalar("huly_component", template.componentName),
+    yamlScalar("huly_milestone", template.milestoneLabel),
+    yamlScalar("huly_estimation_ms", template.estimation),
+    yamlScalar("huly_estimation_display", formatDuration(template.estimation)),
+    yamlScalar("huly_updated_at", toIsoDate(template.modifiedOn)),
+    yamlList("huly_labels", sortedLabels),
+    yamlScalar("huly_labels_display", labelsDisp),
+    yamlScalar("huly_labels_inline", labelsInline),
+    yamlList("tags", tags),
+    "---",
+    "",
+    `# 📄 ${template.title}`,
+    "",
+    `> [!huly-header]`,
+    `> 📂 ${projectDisplay} · ⚡ ${template.priority} · ${assigneeDisplay} · 🔄 ${updatedDisplay}`,
+    "",
+    "---",
+    "",
+    "## 📝 Description",
+    "",
+    template.description.trim() || "_No description_",
+    "",
+  ];
+
+  if (template.children.length > 0) {
+    lines.push("## 📑 Subtask templates", "");
+    for (const child of template.children) {
+      lines.push(`### ${child.title}`, "");
+      lines.push(`- Priority: ${child.priority}`);
+      lines.push(
+        `- Assignee: ${employeeLink(
+          child.assigneeName ?? "Unassigned",
+          child.assigneePersonRef,
+          opts.employeePathsByRef,
+        )}`,
+      );
+      lines.push(`- Component: ${child.componentName ?? "None"}`);
+      lines.push(`- Milestone: ${child.milestoneLabel ?? "None"}`);
+      lines.push(`- Estimate: ${formatDuration(child.estimation)}`);
+      lines.push("");
+      lines.push(child.description.trim() || "_No description_");
+      lines.push("");
+    }
+  }
+
+  if (template.attachments.length > 0) {
+    lines.push("---", "", "## 📎 Attachments", "");
+    for (const att of template.attachments) {
+      const meta = [att.mimeType, humanFileSize(att.size)]
+        .filter((p) => p.trim().length > 0)
+        .join(", ");
+      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(...renderCommentsRich(template.comments, opts.employeePathsByRef));
+  lines.push(...issueTemplateIssuesDataview(opts.rootFolder, project, template));
+
+  return lines.join("\n");
+}
+
 function parentIssueLinks(
   parents: HulyIssueParent[],
   issuePathsById: Map<string, string>,
@@ -1687,6 +2225,8 @@ function renderIssueNote(
   projectNoteLink: string,
   componentNoteLink: string | null,
   parentLinks: string[],
+  milestoneNoteLink: string | null,
+  issueTemplateNoteLink: string | null,
   opts: NoteRenderOptions,
 ): string {
   const sortedLabels = [...issue.labels].sort(compareStrings);
@@ -1704,6 +2244,7 @@ function renderIssueNote(
     projectTag(project),
     statusTag(issue.statusName),
     ...componentTag(issue.componentName),
+    ...milestoneTag(issue.milestoneLabel),
     ...labelTags(sortedLabels),
   ]);
   const externalIssueUrl = hulyIssueUrl(opts, issue);
@@ -1738,6 +2279,28 @@ function renderIssueNote(
       "huly_component_note",
       componentNoteLink ? withoutExtension(componentNoteLink) : null,
     ),
+    yamlScalar("huly_milestone_id", issue.milestoneId),
+    yamlScalar("huly_milestone", issue.milestoneLabel),
+    yamlScalar("huly_milestone_note", milestoneNoteLink ? withoutExtension(milestoneNoteLink) : null),
+    yamlScalar(
+      "huly_milestone_link",
+      milestoneNoteLink && issue.milestoneLabel
+        ? wikilink(milestoneNoteLink, issue.milestoneLabel)
+        : null,
+    ),
+    yamlScalar("huly_issue_template_id", issue.issueTemplateId),
+    yamlScalar("huly_issue_template_title", issue.issueTemplateTitle),
+    yamlScalar(
+      "huly_issue_template_note",
+      issueTemplateNoteLink ? withoutExtension(issueTemplateNoteLink) : null,
+    ),
+    yamlScalar(
+      "huly_issue_template_link",
+      issueTemplateNoteLink && issue.issueTemplateTitle
+        ? wikilink(issueTemplateNoteLink, issue.issueTemplateTitle)
+        : null,
+    ),
+    yamlScalar("huly_issue_template_child_id", issue.issueTemplateChildId),
     yamlScalar("huly_due_date", toIsoDate(issue.dueDate)),
     yamlScalar("due", toDateOnlyString(issue.dueDate)),
     yamlScalar("huly_estimation_ms", issue.estimation),
@@ -1796,6 +2359,16 @@ function renderIssueNote(
       componentNoteLink && issue.componentName
         ? wikilink(componentNoteLink, issue.componentName)
         : issue.componentName ?? "None"
+    }`,
+    `- Milestone: ${
+      milestoneNoteLink && issue.milestoneLabel
+        ? wikilink(milestoneNoteLink, issue.milestoneLabel)
+        : issue.milestoneLabel ?? "None"
+    }`,
+    `- Issue template: ${
+      issueTemplateNoteLink && issue.issueTemplateTitle
+        ? wikilink(issueTemplateNoteLink, issue.issueTemplateTitle)
+        : issue.issueTemplateTitle ?? "None"
     }`,
     ...(parentLinks.length > 0
       ? parentLinks.map((link) => `- Parent: ${link}`)
@@ -2092,12 +2665,30 @@ function dispatchProjectNote(
   issues: HulyIssue[],
   componentLinks: string[],
   issueLinks: string[],
+  milestoneLinks: string[],
+  issueTemplateLinks: string[],
   opts: NoteRenderOptions,
 ): string {
   if (opts.noteStyle === "rich") {
-    return renderRichProjectNote(project, issues, componentLinks, issueLinks, opts);
+    return renderRichProjectNote(
+      project,
+      issues,
+      componentLinks,
+      issueLinks,
+      milestoneLinks,
+      issueTemplateLinks,
+      opts,
+    );
   }
-  return renderProjectNote(project, issues, componentLinks, issueLinks, opts);
+  return renderProjectNote(
+    project,
+    issues,
+    componentLinks,
+    issueLinks,
+    milestoneLinks,
+    issueTemplateLinks,
+    opts,
+  );
 }
 
 function dispatchComponentNote(
@@ -2118,12 +2709,56 @@ function dispatchIssueNote(
   projectNoteLink: string,
   componentNoteLink: string | null,
   parentLinks: string[],
+  milestoneNoteLink: string | null,
+  issueTemplateNoteLink: string | null,
   opts: NoteRenderOptions,
 ): string {
   if (opts.noteStyle === "rich") {
-    return renderRichIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
+    return renderRichIssueNote(
+      project,
+      issue,
+      projectNoteLink,
+      componentNoteLink,
+      parentLinks,
+      milestoneNoteLink,
+      issueTemplateNoteLink,
+      opts,
+    );
   }
-  return renderIssueNote(project, issue, projectNoteLink, componentNoteLink, parentLinks, opts);
+  return renderIssueNote(
+    project,
+    issue,
+    projectNoteLink,
+    componentNoteLink,
+    parentLinks,
+    milestoneNoteLink,
+    issueTemplateNoteLink,
+    opts,
+  );
+}
+
+function dispatchMilestoneNote(
+  project: HulyProject,
+  milestone: HulyMilestone,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  if (opts.noteStyle === "rich") {
+    return renderRichMilestoneNote(project, milestone, projectNoteLink, opts);
+  }
+  return renderMilestoneNote(project, milestone, projectNoteLink, opts);
+}
+
+function dispatchIssueTemplateNote(
+  project: HulyProject,
+  template: HulyIssueTemplate,
+  projectNoteLink: string,
+  opts: NoteRenderOptions,
+): string {
+  if (opts.noteStyle === "rich") {
+    return renderRichIssueTemplateNote(project, template, projectNoteLink, opts);
+  }
+  return renderIssueTemplateNote(project, template, projectNoteLink, opts);
 }
 
 function dispatchEmployeeNote(
@@ -2203,6 +2838,8 @@ export class VaultSyncService {
     components: HulyComponent[],
     issues: HulyIssue[],
     employees: HulyEmployeeProfile[],
+    milestones: HulyMilestone[],
+    issueTemplates: HulyIssueTemplate[],
     _options: SyncOptions,
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
@@ -2231,9 +2868,19 @@ export class VaultSyncService {
 
     const componentsByProject = new Map<string, HulyComponent[]>();
     const issuesByProject = new Map<string, HulyIssue[]>();
+    const milestonesByProject = new Map<string, HulyMilestone[]>();
+    const issueTemplatesByProject = new Map<string, HulyIssueTemplate[]>();
     const issuePathsById = new Map<string, string>();
     const componentPathsById = new Map<string, string>();
-    const totalWrites = projects.length + components.length + issues.length + employees.length;
+    const milestonePathsById = new Map<string, string>();
+    const issueTemplatePathsById = new Map<string, string>();
+    const totalWrites =
+      projects.length +
+      components.length +
+      issues.length +
+      employees.length +
+      milestones.length +
+      issueTemplates.length;
     let completedWrites = 0;
 
     const reportWriteProgress = (message: string): void => {
@@ -2260,6 +2907,18 @@ export class VaultSyncService {
       issuesByProject.set(issue.projectId, existing);
     }
 
+    for (const milestone of milestones) {
+      const existing = milestonesByProject.get(milestone.projectId) ?? [];
+      existing.push(milestone);
+      milestonesByProject.set(milestone.projectId, existing);
+    }
+
+    for (const template of issueTemplates) {
+      const existing = issueTemplatesByProject.get(template.projectId) ?? [];
+      existing.push(template);
+      issueTemplatesByProject.set(template.projectId, existing);
+    }
+
     for (const project of projects) {
       for (const component of componentsByProject.get(project.id) ?? []) {
         componentPathsById.set(component.id, componentNotePath(rootFolder, project, component));
@@ -2271,20 +2930,37 @@ export class VaultSyncService {
           issueNotePath(rootFolder, project, issue, issueNoteFileNameMode),
         );
       }
+
+      for (const milestone of milestonesByProject.get(project.id) ?? []) {
+        milestonePathsById.set(milestone.id, milestoneNotePath(rootFolder, project, milestone));
+      }
+
+      for (const template of issueTemplatesByProject.get(project.id) ?? []) {
+        issueTemplatePathsById.set(
+          template.id,
+          issueTemplateNotePath(rootFolder, project, template),
+        );
+      }
     }
 
     for (const project of projects) {
       const projectFolder = projectFolderPath(rootFolder, project);
       const tasksFolder = projectTasksFolderPath(rootFolder, project);
       const componentsFolder = projectComponentsFolderPath(rootFolder, project);
+      const milestonesFolder = projectMilestonesFolderPath(rootFolder, project);
+      const templatesFolder = projectIssueTemplatesFolderPath(rootFolder, project);
       const projectNote = projectNotePath(rootFolder, project, projectNoteFileNameMode);
       const legacyProjectNote = joinVaultPath(projectFolder, "_project.md");
       const projectComponents = componentsByProject.get(project.id) ?? [];
       const projectIssues = issuesByProject.get(project.id) ?? [];
+      const projectMilestones = milestonesByProject.get(project.id) ?? [];
+      const projectIssueTemplates = issueTemplatesByProject.get(project.id) ?? [];
 
       await ensureFolder(this.app.vault, projectFolder);
       await ensureFolder(this.app.vault, tasksFolder);
       await ensureFolder(this.app.vault, componentsFolder);
+      await ensureFolder(this.app.vault, milestonesFolder);
+      await ensureFolder(this.app.vault, templatesFolder);
       await renameFileIfNeeded(
         this.app,
         findExistingProjectNote(
@@ -2316,11 +2992,37 @@ export class VaultSyncService {
             `${issue.identifier} ${issue.title}`.trim(),
           ),
         );
+      const milestoneLinks = [...projectMilestones]
+        .sort((left, right) => compareStrings(left.label, right.label))
+        .map((milestone) =>
+          wikilink(
+            milestonePathsById.get(milestone.id) ??
+              milestoneNotePath(rootFolder, project, milestone),
+            milestone.label,
+          ),
+        );
+      const issueTemplateLinks = [...projectIssueTemplates]
+        .sort((left, right) => compareStrings(left.title, right.title))
+        .map((template) =>
+          wikilink(
+            issueTemplatePathsById.get(template.id) ??
+              issueTemplateNotePath(rootFolder, project, template),
+            template.title,
+          ),
+        );
 
       await upsertFile(
         this.app.vault,
         projectNote,
-        dispatchProjectNote(project, projectIssues, componentLinks, issueLinks, renderOpts),
+        dispatchProjectNote(
+          project,
+          projectIssues,
+          componentLinks,
+          issueLinks,
+          milestoneLinks,
+          issueTemplateLinks,
+          renderOpts,
+        ),
       );
       completedWrites += 1;
       reportWriteProgress(`Project note: ${project.identifier}`);
@@ -2344,6 +3046,12 @@ export class VaultSyncService {
         const componentNoteLink = issue.componentId
           ? componentPathsById.get(issue.componentId) ?? null
           : null;
+        const milestoneNoteLink = issue.milestoneId
+          ? milestonePathsById.get(issue.milestoneId) ?? null
+          : null;
+        const issueTemplateNoteLink = issue.issueTemplateId
+          ? issueTemplatePathsById.get(issue.issueTemplateId) ?? null
+          : null;
         const linksToParents = parentIssueLinks(issue.parents, issuePathsById);
 
         await renameFileIfNeeded(
@@ -2366,11 +3074,59 @@ export class VaultSyncService {
             projectNote,
             componentNoteLink,
             linksToParents,
+            milestoneNoteLink,
+            issueTemplateNoteLink,
             renderOpts,
           ),
         );
         completedWrites += 1;
         reportWriteProgress(`Issue: ${issue.identifier}`);
+      });
+
+      await mapLimit(projectMilestones, WRITE_CONCURRENCY, async (milestone) => {
+        const milestonePath =
+          milestonePathsById.get(milestone.id) ??
+          milestoneNotePath(rootFolder, project, milestone);
+        await renameFileIfNeeded(
+          this.app,
+          findExistingMilestoneNote(
+            this.app.vault,
+            milestonesFolder,
+            milestoneNoteCandidateStems(milestone),
+            milestonePath,
+          ),
+          milestonePath,
+        );
+        await upsertFile(
+          this.app.vault,
+          milestonePath,
+          dispatchMilestoneNote(project, milestone, projectNote, renderOpts),
+        );
+        completedWrites += 1;
+        reportWriteProgress(`Milestone: ${project.identifier} / ${milestone.label}`);
+      });
+
+      await mapLimit(projectIssueTemplates, WRITE_CONCURRENCY, async (template) => {
+        const templatePath =
+          issueTemplatePathsById.get(template.id) ??
+          issueTemplateNotePath(rootFolder, project, template);
+        await renameFileIfNeeded(
+          this.app,
+          findExistingIssueTemplateNote(
+            this.app.vault,
+            templatesFolder,
+            issueTemplateNoteCandidateStems(template),
+            templatePath,
+          ),
+          templatePath,
+        );
+        await upsertFile(
+          this.app.vault,
+          templatePath,
+          dispatchIssueTemplateNote(project, template, projectNote, renderOpts),
+        );
+        completedWrites += 1;
+        reportWriteProgress(`Issue template: ${project.identifier} / ${template.title}`);
       });
     }
 
@@ -2406,6 +3162,8 @@ export class VaultSyncService {
       componentCount: components.length,
       issueCount: issues.length,
       employeeCount: employees.length,
+      milestoneCount: milestones.length,
+      issueTemplateCount: issueTemplates.length,
     };
   }
 }

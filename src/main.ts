@@ -194,19 +194,26 @@ export default class HulySyncPlugin extends Plugin {
         message: "Fetching data from Huly...",
       });
 
-      const { components, issues, employees } = await this.apiClient.fetchProjectData(
+      const { components, issues, employees, milestones, issueTemplates } =
+        await this.apiClient.fetchProjectData(
         this.getConnectionConfig(),
         selectedProjects,
       );
 
-      const totalWrites = selectedProjects.length + components.length + issues.length + employees.length;
+      const totalWrites =
+        selectedProjects.length +
+        components.length +
+        issues.length +
+        employees.length +
+        milestones.length +
+        issueTemplates.length;
       this.setSyncProgress({
         active: true,
         phase: "write",
         current: 0,
         total: totalWrites,
         percentage: 0,
-        message: `Fetched ${selectedProjects.length} projects, ${components.length} components, ${issues.length} issues and ${employees.length} employees.`,
+        message: `Fetched ${selectedProjects.length} projects, ${components.length} components, ${issues.length} issues, ${milestones.length} milestones, ${issueTemplates.length} templates, ${employees.length} employees.`,
       });
 
       const stats = await this.vaultSync.sync(
@@ -215,6 +222,8 @@ export default class HulySyncPlugin extends Plugin {
         components,
         issues,
         employees,
+        milestones,
+        issueTemplates,
         options,
         (progress) => {
           this.setSyncProgress(progress);
@@ -228,12 +237,24 @@ export default class HulySyncPlugin extends Plugin {
       await this.persistSettings();
       this.settingsTab?.display();
 
-      const successMessage = `Synced ${stats.projectCount} projects, ${stats.componentCount} components, ${stats.issueCount} issues and ${stats.employeeCount} employees.`;
+      const successMessage = `Synced ${stats.projectCount} projects, ${stats.componentCount} components, ${stats.issueCount} issues, ${stats.milestoneCount} milestones, ${stats.issueTemplateCount} templates and ${stats.employeeCount} employees.`;
       this.setSyncProgress({
         active: false,
         phase: "done",
-        current: stats.projectCount + stats.componentCount + stats.issueCount,
-        total: stats.projectCount + stats.componentCount + stats.issueCount,
+        current:
+          stats.projectCount +
+          stats.componentCount +
+          stats.issueCount +
+          stats.milestoneCount +
+          stats.issueTemplateCount +
+          stats.employeeCount,
+        total:
+          stats.projectCount +
+          stats.componentCount +
+          stats.issueCount +
+          stats.milestoneCount +
+          stats.issueTemplateCount +
+          stats.employeeCount,
         percentage: 100,
         message: successMessage,
       });

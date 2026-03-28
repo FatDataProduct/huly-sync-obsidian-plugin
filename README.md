@@ -19,7 +19,11 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault 
 - Support custom Huly base URLs and workspace selection.
 - Pull attachments as links from issues, components, and comments.
 - Pull comments for issues and components.
-- Render wikilinks between projects, components, parent issues, and linked employee notes where possible.
+- Sync **milestones** per project (`milestones/`): descriptions, comments, attachments, target date, Dataview lists of tasks in the milestone (`huly_milestone_id` on issue notes).
+- Sync **issue templates** per project (`issue-templates/`): descriptions, default labels (from Huly tag elements), subtask templates, comments, attachments, Dataview lists of issues created from a template (`huly_issue_template_id`).
+- Link issue notes to milestone and issue-template notes via wikilinks and frontmatter (`huly_milestone_*`, `huly_issue_template_*`).
+- Rich notes with Meta Bind: issue sidebar embed shows milestone and issue-template rows.
+- Render wikilinks between projects, components, milestones, issue templates, parent issues, and linked employee notes where possible.
 - Show synchronization progress and scheduler state in plugin settings.
 - Prefer user nicknames for assignees and comment authors, with readable full names as fallback.
 - Run manual syncs and predictable scheduled syncs.
@@ -47,7 +51,7 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault 
 
 ## Current behavior
 
-- Manual sync writes notes for all selected projects plus related components, issues, and employee cards.
+- Manual sync writes notes for all selected projects plus related components, issues, milestones, issue templates, and employee cards.
 - Scheduled sync refreshes selected projects on a fixed interval while Obsidian is open.
 - If a scheduled tick happens while another sync is running, that tick is skipped and recorded in plugin settings instead of starting a parallel sync.
 - Plugin settings show sync progress, `Next scheduled sync`, and the timestamp/status of the last scheduled attempt.
@@ -242,6 +246,10 @@ huly/
     PROJECT Project Name.md
     components/
       Component Name.md
+    milestones/
+      Milestone label abcdef12.md
+    issue-templates/
+      Template title fedcba98.md
     tasks/
       PROJECT-123.md
   employees/
@@ -250,8 +258,21 @@ huly/
 
 Notes:
 
-- `huly/_templates/` is created for rich notes when `Use Meta Bind` is enabled.
+- `huly/_templates/` is created for rich notes when `Use Meta Bind` is enabled. These files are **Obsidian/Meta Bind** snippets, not Huly issue templates.
+- Huly **issue templates** are stored under each project’s `issue-templates/` folder.
 - `employees/` contains synced employee notes used by Dataview-friendly team views.
+
+## Changelog
+
+### 0.2.1
+
+- Milestones and issue templates are fetched from Huly and written under each project folder.
+- Issue notes include milestone and template linkage (frontmatter + wikilinks); project notes list milestones and templates.
+- Milestone and template notes include comments and attachments when present in Huly; templates resolve default label titles via `TagElement`.
+- Assignees on templates (and template comment authors) are included in employee profile sync where applicable.
+- Renaming: milestone and template note files are migrated when the naming pattern changes (same idea as issue notes).
+- Meta Bind issue sidebar template includes milestone and issue-template fields.
+- TypeScript: `moduleResolution` set to `bundler` for correct `filenamify/browser` resolution; linter fixes for strict indexed access and account profile typing.
 
 ## Mobile notes
 

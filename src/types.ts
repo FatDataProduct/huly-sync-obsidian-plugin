@@ -157,6 +157,50 @@ export interface HulyIssueParent {
   projectId: string;
 }
 
+export interface HulyMilestone {
+  id: string;
+  projectId: string;
+  projectIdentifier: string;
+  label: string;
+  description: string;
+  statusName: string;
+  targetDate: number | null;
+  modifiedOn: number;
+  attachments: HulyAttachment[];
+  comments: HulyComment[];
+}
+
+export interface HulyIssueTemplateChild {
+  id: string;
+  title: string;
+  description: string;
+  priority: string;
+  assigneeName: string | null;
+  assigneePersonRef: string | null;
+  componentName: string | null;
+  milestoneLabel: string | null;
+  estimation: number;
+}
+
+export interface HulyIssueTemplate {
+  id: string;
+  projectId: string;
+  projectIdentifier: string;
+  title: string;
+  description: string;
+  priority: string;
+  assigneeName: string | null;
+  assigneePersonRef: string | null;
+  componentName: string | null;
+  milestoneLabel: string | null;
+  estimation: number;
+  modifiedOn: number;
+  labels: string[];
+  attachments: HulyAttachment[];
+  comments: HulyComment[];
+  children: HulyIssueTemplateChild[];
+}
+
 export interface HulyIssue {
   id: string;
   identifier: string;
@@ -174,6 +218,11 @@ export interface HulyIssue {
   assigneePersonUuid: string | null;
   componentId: string | null;
   componentName: string | null;
+  milestoneId: string | null;
+  milestoneLabel: string | null;
+  issueTemplateId: string | null;
+  issueTemplateTitle: string | null;
+  issueTemplateChildId: string | null;
   dueDate: number | null;
   estimation: number;
   remainingTime: number;
@@ -207,6 +256,8 @@ export interface SyncStats {
   componentCount: number;
   issueCount: number;
   employeeCount: number;
+  milestoneCount: number;
+  issueTemplateCount: number;
 }
 
 export const DEFAULT_SETTINGS: HulySyncSettings = {
