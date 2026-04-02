@@ -3007,6 +3007,27 @@ export class VaultSyncService {
       workspace: settings.workspace,
       employeePathsByRef,
     };
+    const PROGRESS_THROTTLE_MS = 150;
+    let lastProgressTime = 0;
+    let pendingProgress: SyncProgress | null = null;
+    const throttledProgress = (progress: SyncProgress): void => {
+      if (!onProgress) return;
+      const now = Date.now();
+      if (now - lastProgressTime >= PROGRESS_THROTTLE_MS) {
+        lastProgressTime = now;
+        pendingProgress = null;
+        onProgress(progress);
+      } else {
+        pendingProgress = progress;
+      }
+    };
+    const flushProgress = (): void => {
+      if (pendingProgress && onProgress) {
+        onProgress(pendingProgress);
+        pendingProgress = null;
+      }
+    };
+
     await ensureFolder(this.app.vault, rootFolder);
     await ensureFolder(this.app.vault, employeeFolderPath(rootFolder));
 
@@ -3043,7 +3064,7 @@ export class VaultSyncService {
         att.url = localPath;
       }
       downloadedAttachments++;
-      onProgress?.({
+      throttledProgress({
         active: true,
         phase: "download",
         current: downloadedAttachments,
@@ -3052,6 +3073,7 @@ export class VaultSyncService {
         message: `Attachment: ${att.name}`,
       });
     });
+    flushProgress();
 
     if (renderOpts.noteStyle === "rich" && renderOpts.useMetaBind) {
       await writeTemplateFiles(this.app.vault, rootFolder);
@@ -3075,7 +3097,7 @@ export class VaultSyncService {
     let completedWrites = 0;
 
     const reportWriteProgress = (message: string): void => {
-      onProgress?.({
+      throttledProgress({
         active: true,
         phase: "write",
         current: completedWrites,
@@ -3322,6 +3344,36 @@ export class VaultSyncService {
     }
 
     const employeesFolder = employeeFolderPath(rootFolder);
+    const issuesByAssigneeRef = new Map<string, HulyIssue[]>();
+    const timeTrackedIssuesByEmployeeRef = new Map<string, HulyIssue[]>();
+    for (const issue of issues) {
+      if (issue.assigneePersonRef) {
+        const existing = issuesByAssigneeRef.get(issue.assigneePersonRef) ?? [];
+        existing.push(issue);
+        issuesByAssigneeRef.set(issue.assigneePersonRef, existing);
+      }
+      for (const report of issue.timeReports) {
+        if (report.employeeRef) {
+          if (!timeTrackedIssuesByEmployeeRef.has(report.employeeRef)) {
+            timeTrackedIssuesByEmployeeRef.set(report.employeeRef, []);
+          }
+          const list = timeTrackedIssuesByEmployeeRef.get(report.employeeRef)!;
+          if (!list.includes(issue)) {
+            list.push(issue);
+          }
+        }
+        if (report.employeePersonUuid) {
+          if (!timeTrackedIssuesByEmployeeRef.has(report.employeePersonUuid)) {
+            timeTrackedIssuesByEmployeeRef.set(report.employeePersonUuid, []);
+          }
+          const list = timeTrackedIssuesByEmployeeRef.get(report.employeePersonUuid)!;
+          if (!list.includes(issue)) {
+            list.push(issue);
+          }
+        }
+      }
+    }
+
     for (const employee of employees) {
       const employeePath =
         employeePathsByRef.get(employee.personRef) ??
@@ -3332,12 +3384,11 @@ export class VaultSyncService {
         employeePath,
       );
 
-      const assignedIssues = issues.filter(
-        (issue) => issue.assigneePersonRef !== null && issue.assigneePersonRef === employee.personRef,
-      );
-      const timeTrackedIssues = issues.filter((issue) =>
-        issue.timeReports.some((report) => employeeMatchesTimeReport(employee, report)),
-      );
+      const assignedIssues = issuesByAssigneeRef.get(employee.personRef) ?? [];
+      const timeTrackedIssues = [
+        ...(employee.personRef ? timeTrackedIssuesByEmployeeRef.get(employee.personRef) ?? [] : []),
+        ...(employee.personUuid ? timeTrackedIssuesByEmployeeRef.get(employee.personUuid) ?? [] : []),
+      ].filter((issue, idx, arr) => arr.indexOf(issue) === idx);
 
       await upsertFile(
         this.app.vault,
@@ -3347,6 +3398,7 @@ export class VaultSyncService {
       completedWrites += 1;
       reportWriteProgress(`Employee: ${employee.displayName}`);
     }
+    flushProgress();
 
     return {
       projectCount: projects.length,

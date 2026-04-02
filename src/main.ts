@@ -460,7 +460,6 @@ class HulySyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.targetFolder = normalizePath(value.trim() || "huly");
             await this.plugin.persistSettings();
-            this.display();
           }),
       );
 
@@ -497,7 +496,6 @@ class HulySyncSettingTab extends PluginSettingTab {
               ? parsed
               : DEFAULT_SETTINGS.syncIntervalMinutes;
             await this.plugin.persistSettings({ reschedule: true });
-            this.display();
           }),
       );
 

@@ -318,6 +318,7 @@ const formatName = (
 ).formatName;
 
 const PROJECT_FETCH_CONCURRENCY = 3;
+const DESCRIPTION_FETCH_CONCURRENCY = 8;
 const AUTHOR_LOOKUP_CONCURRENCY = 8;
 const HOUR_MS = 60 * 60 * 1000;
 const HR_DEPARTMENT_CLASS = "hr:class:Department";
@@ -1241,6 +1242,15 @@ export class HulyApiClient {
         workspaceToken.workspaceId,
       );
 
+      const allStatuses = await client.findAll(
+        tracker.class.IssueStatus,
+        {},
+        { showArchived: true },
+      );
+      const globalStatusNameById = new Map(
+        (allStatuses as unknown as { _id: string; name: string }[]).map((s) => [s._id, s.name]),
+      );
+
       const projectResults = await mapLimit(
         selectedProjects,
         PROJECT_FETCH_CONCURRENCY,
@@ -1336,7 +1346,6 @@ export class HulyApiClient {
             descriptions,
             timeReports,
             issueActivityMessages,
-            projectStatuses,
           ] = await Promise.all([
             issueIds.length
               ? client.findAll(
@@ -1424,11 +1433,13 @@ export class HulyApiClient {
                 showArchived: true,
               },
             ),
-            Promise.all(
-              typedIssues.map(async (issue) => {
+            mapLimit(
+              typedIssues,
+              DESCRIPTION_FETCH_CONCURRENCY,
+              async (issue) => {
                 const description = await fetchIssueDescription(client, issue._id, issue.description);
                 return [issue._id, description] as const;
-              }),
+              },
             ),
             issueIds.length
               ? client.findAll(
@@ -1466,13 +1477,6 @@ export class HulyApiClient {
                   },
                 )
               : Promise.resolve([]),
-            client.findAll(
-              tracker.class.IssueStatus,
-              {},
-              {
-                showArchived: true,
-              },
-            ),
           ]);
 
           const templateLabelRefs = Array.from(
@@ -1816,11 +1820,7 @@ export class HulyApiClient {
           const descriptionByIssue = new Map(descriptions);
 
           const typedActivityMessages = issueActivityMessages as unknown as LookupDocUpdateMessage[];
-          const statusNameById = new Map(
-            (projectStatuses as unknown as { _id: string; name?: string }[]).map(
-              (s) => [s._id, s.name ?? s._id] as const,
-            ),
-          );
+          const statusNameById = new Map(globalStatusNameById);
           for (const issue of typedIssues) {
             const lookupName = issue.$lookup?.status?.name;
             if (lookupName && issue.status) {
@@ -1911,8 +1911,10 @@ export class HulyApiClient {
             historyByIssue.set(msg.objectId, existing);
           }
 
-          const milestoneDescriptionEntries = await Promise.all(
-            typedMilestones.map(async (item) =>
+          const milestoneDescriptionEntries = await mapLimit(
+            typedMilestones,
+            DESCRIPTION_FETCH_CONCURRENCY,
+            async (item) =>
               [
                 item._id,
                 await fetchMarkupFieldMarkdown(
@@ -1924,12 +1926,13 @@ export class HulyApiClient {
                   "milestone description",
                 ),
               ] as const,
-            ),
           );
           const descriptionByMilestone = new Map(milestoneDescriptionEntries);
 
-          const templateDescriptionEntries = await Promise.all(
-            typedIssueTemplates.map(async (item) =>
+          const templateDescriptionEntries = await mapLimit(
+            typedIssueTemplates,
+            DESCRIPTION_FETCH_CONCURRENCY,
+            async (item) =>
               [
                 item._id,
                 await fetchMarkupFieldMarkdown(
@@ -1941,7 +1944,6 @@ export class HulyApiClient {
                   "template description",
                 ),
               ] as const,
-            ),
           );
           const descriptionByTemplate = new Map(templateDescriptionEntries);
 
@@ -1970,8 +1972,10 @@ export class HulyApiClient {
             comments: milestoneCommentsByParent.get(item._id) ?? [],
           }));
 
-          const mappedIssueTemplates: HulyIssueTemplate[] = await Promise.all(
-            typedIssueTemplates.map(async (tpl) => {
+          const mappedIssueTemplates: HulyIssueTemplate[] = await mapLimit(
+            typedIssueTemplates,
+            DESCRIPTION_FETCH_CONCURRENCY,
+            async (tpl) => {
               const assigneeName = await resolveAssigneeName(
                 client,
                 tpl.assignee,
@@ -2023,11 +2027,13 @@ export class HulyApiClient {
                 comments: templateCommentsByParent.get(tpl._id) ?? [],
                 children,
               };
-            }),
+            },
           );
 
-          const mappedIssues: HulyIssue[] = await Promise.all(
-            typedIssues.map(async (issue) => {
+          const mappedIssues: HulyIssue[] = await mapLimit(
+            typedIssues,
+            DESCRIPTION_FETCH_CONCURRENCY,
+            async (issue) => {
               const statusName = issue.$lookup?.status?.name ?? issue.status;
               const componentName = issue.$lookup?.component?.label ?? null;
               const milestoneId = issue.milestone ?? null;
@@ -2082,7 +2088,7 @@ export class HulyApiClient {
                 isClosed: isClosedStatus(issue.status),
                 history: historyByIssue.get(issue._id) ?? [],
               };
-            }),
+            },
           );
 
           return {
