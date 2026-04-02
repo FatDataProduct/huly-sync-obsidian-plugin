@@ -706,6 +706,10 @@ class HulySyncSettingTab extends PluginSettingTab {
     if (progress.active) {
       if (progress.phase === "fetch") {
         this.progressMetaEl.setText("Fetching data...");
+      } else if (progress.phase === "download") {
+        this.progressMetaEl.setText(
+          `Downloading ${progress.current}/${progress.total} (${progress.percentage}%)`,
+        );
       } else {
         this.progressMetaEl.setText(
           `${progress.current}/${progress.total} (${progress.percentage}%)`,

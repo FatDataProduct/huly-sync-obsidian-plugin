@@ -252,7 +252,7 @@ export interface SyncOptions {
   reason: "manual" | "scheduled";
 }
 
-export type SyncProgressPhase = "idle" | "fetch" | "write" | "done" | "error";
+export type SyncProgressPhase = "idle" | "fetch" | "download" | "write" | "done" | "error";
 
 export interface SyncProgress {
   active: boolean;

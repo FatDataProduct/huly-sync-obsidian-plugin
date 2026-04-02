@@ -3015,6 +3015,19 @@ export class VaultSyncService {
 
     const allAttachments = collectAllAttachments(issues, components, milestones, issueTemplates);
     const localPathByAttId = new Map<string, string>();
+    const totalAttachments = allAttachments.length;
+    let downloadedAttachments = 0;
+
+    if (totalAttachments > 0) {
+      onProgress?.({
+        active: true,
+        phase: "download",
+        current: 0,
+        total: totalAttachments,
+        percentage: 0,
+        message: `Downloading attachments: 0/${totalAttachments}`,
+      });
+    }
 
     await mapLimit(allAttachments, ATTACHMENT_DOWNLOAD_CONCURRENCY, async (att) => {
       const localPath = attachmentLocalPath(rootFolder, att);
@@ -3029,6 +3042,15 @@ export class VaultSyncService {
         localPathByAttId.set(att.id, localPath);
         att.url = localPath;
       }
+      downloadedAttachments++;
+      onProgress?.({
+        active: true,
+        phase: "download",
+        current: downloadedAttachments,
+        total: totalAttachments,
+        percentage: Math.round((downloadedAttachments / totalAttachments) * 100),
+        message: `Attachment: ${att.name}`,
+      });
     });
 
     if (renderOpts.noteStyle === "rich" && renderOpts.useMetaBind) {
