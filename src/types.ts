@@ -201,6 +201,17 @@ export interface HulyIssueTemplate {
   children: HulyIssueTemplateChild[];
 }
 
+export interface HulyIssueHistoryEntry {
+  id: string;
+  timestamp: number;
+  changedBy: string;
+  changedByPersonRef: string | null;
+  field: string;
+  action: string;
+  fromValue: string | null;
+  toValue: string | null;
+}
+
 export interface HulyIssue {
   id: string;
   identifier: string;
@@ -234,6 +245,7 @@ export interface HulyIssue {
   timeReports: HulyTimeReport[];
   modifiedOn: number;
   isClosed: boolean;
+  history: HulyIssueHistoryEntry[];
 }
 
 export interface SyncOptions {

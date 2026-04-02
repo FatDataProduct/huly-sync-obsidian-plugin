@@ -6,6 +6,7 @@ import {
   type PlatformClient,
 } from "@hcengineering/api-client";
 import { getClient as getAccountClient } from "@hcengineering/account-client";
+import activityModule from "@hcengineering/activity";
 import attachmentModule from "@hcengineering/attachment";
 import chunterModule from "@hcengineering/chunter";
 import contactModule from "@hcengineering/contact";
@@ -29,6 +30,7 @@ import type {
   HulyEmployeeStatus,
   HulyEmployeeVacation,
   HulyIssue,
+  HulyIssueHistoryEntry,
   HulyIssueParent,
   HulyIssueTemplate,
   HulyIssueTemplateChild,
@@ -116,6 +118,24 @@ type LookupTagElement = {
 type LookupTagReference = {
   attachedTo: string;
   title: string;
+};
+
+type LookupDocUpdateMessage = {
+  _id: string;
+  objectId: string;
+  objectClass: string;
+  action: string;
+  modifiedBy: string;
+  modifiedOn: number;
+  attributeUpdates?: {
+    attrKey: string;
+    attrClass: string;
+    set: (string | number | null)[];
+    prevValue?: unknown;
+    added: (string | number | null)[];
+    removed: (string | number | null)[];
+    isMixin: boolean;
+  };
 };
 
 type LookupComponent = {
@@ -233,6 +253,8 @@ type LookupHrRequest = {
   tzDueDate?: LookupHrDate | null;
 };
 
+const activity = (activityModule as typeof activityModule & { default?: typeof activityModule })
+  .default ?? activityModule;
 const tracker = (trackerModule as typeof trackerModule & { default?: typeof trackerModule })
   .default ?? trackerModule;
 const attachment = (
@@ -1312,6 +1334,8 @@ export class HulyApiClient {
             labels,
             descriptions,
             timeReports,
+            issueActivityMessages,
+            projectStatuses,
           ] = await Promise.all([
             issueIds.length
               ? client.findAll(
@@ -1423,6 +1447,33 @@ export class HulyApiClient {
                   },
                 )
               : Promise.resolve([]),
+            issueIds.length
+              ? client.findAll(
+                  activity.class.DocUpdateMessage,
+                  {
+                    objectClass: tracker.class.Issue,
+                    objectId: {
+                      $in: issueIds as never,
+                    },
+                    action: "update" as never,
+                  },
+                  {
+                    sort: {
+                      modifiedOn: SortingOrder.Ascending,
+                    },
+                    showArchived: true,
+                  },
+                )
+              : Promise.resolve([]),
+            client.findAll(
+              tracker.class.IssueStatus,
+              {
+                space: project.id as never,
+              },
+              {
+                showArchived: true,
+              },
+            ),
           ]);
 
           const templateLabelRefs = Array.from(
@@ -1765,6 +1816,87 @@ export class HulyApiClient {
 
           const descriptionByIssue = new Map(descriptions);
 
+          const typedActivityMessages = issueActivityMessages as unknown as LookupDocUpdateMessage[];
+          const statusNameById = new Map(
+            (projectStatuses as unknown as { _id: string; name?: string }[]).map(
+              (s) => [s._id, s.name ?? s._id] as const,
+            ),
+          );
+          const assigneeNameByRef = new Map(
+            typedIssues
+              .filter((issue) => issue.assignee && issue.$lookup?.assignee?.name)
+              .map((issue) => [issue.assignee!, issue.$lookup!.assignee!.name!] as const),
+          );
+
+          const TRACKED_FIELDS = new Set(["status", "assignee", "priority"]);
+          const activityAuthorIds = Array.from(
+            new Set(typedActivityMessages.map((m) => m.modifiedBy)),
+          );
+          const activityAuthorEntries = await mapLimit(
+            activityAuthorIds,
+            AUTHOR_LOOKUP_CONCURRENCY,
+            async (authorId) =>
+              [
+                authorId,
+                {
+                  name: await resolveCommentAuthorName(client, authorId),
+                  personRef: await resolveAuthorPersonRef(client, authorId),
+                },
+              ] as const,
+          );
+          const activityAuthorInfo = new Map(activityAuthorEntries);
+
+          const resolveFieldValue = async (
+            field: string,
+            raw: unknown,
+          ): Promise<string | null> => {
+            if (raw === null || raw === undefined) {
+              return null;
+            }
+            const value = String(raw);
+            if (value.trim().length === 0) {
+              return null;
+            }
+            if (field === "status") {
+              return statusNameById.get(value) ?? value;
+            }
+            if (field === "assignee") {
+              const cached = assigneeNameByRef.get(value);
+              if (cached) {
+                return formatReadableName(cached) ?? cached;
+              }
+              const resolved = await resolveAssigneeName(client, value, null);
+              if (resolved) {
+                assigneeNameByRef.set(value, resolved);
+              }
+              return resolved ?? value;
+            }
+            return value;
+          };
+
+          const historyByIssue = new Map<string, HulyIssueHistoryEntry[]>();
+          for (const msg of typedActivityMessages) {
+            const updates = msg.attributeUpdates;
+            if (!updates || !TRACKED_FIELDS.has(updates.attrKey)) {
+              continue;
+            }
+            const existing = historyByIssue.get(msg.objectId) ?? [];
+            const authorData = activityAuthorInfo.get(msg.modifiedBy);
+            const newValue = updates.set.length > 0 ? updates.set[0] : null;
+            const entry: HulyIssueHistoryEntry = {
+              id: msg._id,
+              timestamp: msg.modifiedOn,
+              changedBy: authorData?.name ?? msg.modifiedBy,
+              changedByPersonRef: authorData?.personRef ?? null,
+              field: updates.attrKey,
+              action: msg.action,
+              fromValue: await resolveFieldValue(updates.attrKey, updates.prevValue),
+              toValue: await resolveFieldValue(updates.attrKey, newValue),
+            };
+            existing.push(entry);
+            historyByIssue.set(msg.objectId, existing);
+          }
+
           const milestoneDescriptionEntries = await Promise.all(
             typedMilestones.map(async (item) =>
               [
@@ -1934,6 +2066,7 @@ export class HulyApiClient {
                 timeReports: timeReportsByIssue.get(issue._id) ?? [],
                 modifiedOn: issue.modifiedOn,
                 isClosed: isClosedStatus(issue.status),
+                history: historyByIssue.get(issue._id) ?? [],
               };
             }),
           );

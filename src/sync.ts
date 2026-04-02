@@ -12,6 +12,7 @@ import type {
   HulyComponent,
   HulyEmployeeProfile,
   HulyIssue,
+  HulyIssueHistoryEntry,
   HulyIssueParent,
   HulyIssueTemplate,
   HulyMilestone,
@@ -738,6 +739,43 @@ function renderCommentsSection(
         ];
       }),
   ];
+}
+
+function fieldLabel(field: string): string {
+  switch (field) {
+    case "status": return "Status";
+    case "assignee": return "Assignee";
+    case "priority": return "Priority";
+    default: return field;
+  }
+}
+
+function renderIssueHistorySection(
+  history: HulyIssueHistoryEntry[],
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string[] {
+  if (history.length === 0) {
+    return ["## History", "", "_No recorded changes_"];
+  }
+
+  const sorted = [...history].sort((a, b) => a.timestamp - b.timestamp);
+  const lines: string[] = [
+    "## History",
+    "",
+    "| Date | Field | From | To | By |",
+    "|------|-------|------|----|----|",
+  ];
+
+  for (const entry of sorted) {
+    const date = toIsoDate(entry.timestamp) ?? "Unknown";
+    const field = fieldLabel(entry.field);
+    const from = entry.fromValue ?? "—";
+    const to = entry.toValue ?? "—";
+    const by = employeeLink(entry.changedBy, entry.changedByPersonRef, employeePathsByRef);
+    lines.push(`| ${date} | ${field} | ${from} | ${to} | ${by} |`);
+  }
+
+  return lines;
 }
 
 type EmployeeTimeSummary = {
@@ -1602,6 +1640,26 @@ function renderRichIssueNote(
     }
   }
 
+  // History
+  lines.push(L2(""), L2("---"), L2(""));
+  if (issue.history.length === 0) {
+    lines.push(L2("### 📋 History"), L2(""), L2("_No recorded changes_"));
+  } else {
+    const sortedHistory = [...issue.history].sort((a, b) => a.timestamp - b.timestamp);
+    lines.push(L2(`### 📋 History (${issue.history.length})`));
+    lines.push(L2(""));
+    lines.push(L2("| Date | Field | From | To | By |"));
+    lines.push(L2("|------|-------|------|----|----|"));
+    for (const entry of sortedHistory) {
+      const date = formatReadableDatetime(entry.timestamp);
+      const field = fieldLabel(entry.field);
+      const from = entry.fromValue ?? "—";
+      const to = entry.toValue ?? "—";
+      const by = employeeLink(entry.changedBy, entry.changedByPersonRef, opts.employeePathsByRef);
+      lines.push(L2(`| ${date} | ${field} | ${from} | ${to} | ${by} |`));
+    }
+  }
+
   // Comments
   lines.push(L2(""), L2("---"), L2(""));
   if (issue.comments.length === 0) {
@@ -2388,6 +2446,8 @@ function renderIssueNote(
     sortedLabels.length > 0 ? `- Labels: ${sortedLabels.join(", ")}` : "- Labels: None",
     "",
     ...renderIssueTimeReportsSection(issue, opts.employeePathsByRef),
+    "",
+    ...renderIssueHistorySection(issue.history, opts.employeePathsByRef),
     "",
     "## Description",
     "",
