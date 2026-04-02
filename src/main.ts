@@ -194,7 +194,7 @@ export default class HulySyncPlugin extends Plugin {
         message: "Fetching data from Huly...",
       });
 
-      const { components, issues, employees, milestones, issueTemplates } =
+      const { components, issues, employees, milestones, issueTemplates, filesToken } =
         await this.apiClient.fetchProjectData(
         this.getConnectionConfig(),
         selectedProjects,
@@ -225,6 +225,7 @@ export default class HulySyncPlugin extends Plugin {
         milestones,
         issueTemplates,
         options,
+        filesToken,
         (progress) => {
           this.setSyncProgress(progress);
         },

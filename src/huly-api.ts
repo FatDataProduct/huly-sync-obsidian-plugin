@@ -412,7 +412,7 @@ function attachmentUrlTemplate(baseUrl: string, filesUrl: string, workspaceId: s
     ? new URL(filesUrl, `${baseUrl}/`).toString()
     : filesUrl;
 
-  return absoluteFilesUrl.replace(":workspace", workspaceId);
+  return absoluteFilesUrl.split(":workspace").join(workspaceId);
 }
 
 function buildAttachmentUrl(template: string, blobId: string, fileName: string): string {
@@ -1224,6 +1224,7 @@ export class HulyApiClient {
     employees: HulyEmployeeProfile[];
     milestones: HulyMilestone[];
     issueTemplates: HulyIssueTemplate[];
+    filesToken: string;
   }> {
     return this.withClient(config, async (client) => {
       const normalizedUrl = normalizeUrl(config.hulyUrl);
@@ -1467,9 +1468,7 @@ export class HulyApiClient {
               : Promise.resolve([]),
             client.findAll(
               tracker.class.IssueStatus,
-              {
-                space: project.id as never,
-              },
+              {},
               {
                 showArchived: true,
               },
@@ -1822,6 +1821,13 @@ export class HulyApiClient {
               (s) => [s._id, s.name ?? s._id] as const,
             ),
           );
+          for (const issue of typedIssues) {
+            const lookupName = issue.$lookup?.status?.name;
+            if (lookupName && issue.status) {
+              statusNameById.set(issue.status, lookupName);
+            }
+          }
+
           const assigneeNameByRef = new Map(
             typedIssues
               .filter((issue) => issue.assignee && issue.$lookup?.assignee?.name)
@@ -1858,7 +1864,15 @@ export class HulyApiClient {
               return null;
             }
             if (field === "status") {
-              return statusNameById.get(value) ?? value;
+              const cached = statusNameById.get(value);
+              if (cached) {
+                return cached;
+              }
+              const wellKnownMatch = value.match(/^tracker:status:(\w+)$/);
+              if (wellKnownMatch?.[1]) {
+                return wellKnownMatch[1].replace(/([a-z])([A-Z])/g, "$1 $2");
+              }
+              return value;
             }
             if (field === "assignee") {
               const cached = assigneeNameByRef.get(value);
@@ -2168,6 +2182,7 @@ export class HulyApiClient {
         employees,
         milestones: hydratedMilestones,
         issueTemplates: hydratedIssueTemplates,
+        filesToken: workspaceToken.token,
       };
     });
   }

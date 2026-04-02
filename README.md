@@ -17,8 +17,9 @@ Obsidian plugin that synchronizes selected Huly projects into the current vault 
 - Sync due dates, exact time tracking, per-employee time totals, overdue/due-soon flags, and direct Huly links.
 - Support both `email + password` and `token` authentication.
 - Support custom Huly base URLs and workspace selection.
-- Pull attachments as links from issues, components, and comments.
+- Download attachments locally into the vault (`huly/_attachments/`) so files open directly from Obsidian without browser authentication.
 - Pull comments for issues and components.
+- Track issue history: status, assignee, and priority changes fetched from Huly activity log and rendered as a table in each issue note.
 - Sync **milestones** per project (`milestones/`): descriptions, comments, attachments, target date, Dataview lists of tasks in the milestone (`huly_milestone_id` on issue notes).
 - Sync **issue templates** per project (`issue-templates/`): descriptions, default labels (from Huly tag elements), subtask templates, comments, attachments, Dataview lists of issues created from a template (`huly_issue_template_id`).
 - Link issue notes to milestone and issue-template notes via wikilinks and frontmatter (`huly_milestone_*`, `huly_issue_template_*`).
@@ -239,6 +240,8 @@ With the default target folder, synced content looks like this:
 
 ```text
 huly/
+  _attachments/
+    a1b2c3d4-document.pdf
   _templates/
     issue_sidebar.md
     project_header.md
@@ -258,11 +261,20 @@ huly/
 
 Notes:
 
+- `huly/_attachments/` stores downloaded attachment files. Files are named with a short ID prefix for uniqueness.
 - `huly/_templates/` is created for rich notes when `Use Meta Bind` is enabled. These files are **Obsidian/Meta Bind** snippets, not Huly issue templates.
 - Huly **issue templates** are stored under each project’s `issue-templates/` folder.
 - `employees/` contains synced employee notes used by Dataview-friendly team views.
 
 ## Changelog
+
+### 0.2.3
+
+- Attachments are now downloaded locally into `huly/_attachments/` during sync. Links in notes point to local vault files instead of remote URLs, removing the need for browser authentication to open them.
+- Issue notes include a **History** section showing how status, assignee, and priority changed over time, with dates, old/new values, and who made the change.
+- Fixed attachment URLs for self-hosted Huly instances where `:workspace` appeared twice in the file URL template.
+- Fixed history table wikilinks breaking inside markdown tables due to pipe character conflict.
+- Improved status name resolution for history entries, including well-known platform IDs.
 
 ### 0.2.1
 

@@ -1,5 +1,6 @@
 import {
   normalizePath,
+  requestUrl,
   TFile,
   type App,
   type Vault,
@@ -694,15 +695,24 @@ function humanFileSize(size: number): string {
   return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
+function isLocalAttachment(attachment: HulyAttachment): boolean {
+  return !attachment.url.startsWith("http://") && !attachment.url.startsWith("https://");
+}
+
+function formatAttachmentLink(attachment: HulyAttachment): string {
+  const meta = [attachment.mimeType, humanFileSize(attachment.size)]
+    .filter((part) => part.trim().length > 0)
+    .join(", ");
+  const link = isLocalAttachment(attachment)
+    ? `[[${attachment.url}|${attachment.name}]]`
+    : `[${attachment.name}](${attachment.url})`;
+  return `${link}${meta ? ` _(${meta})_` : ""}`;
+}
+
 function attachmentLinks(attachments: HulyAttachment[]): string[] {
   return [...attachments]
     .sort((left, right) => compareStrings(left.name, right.name))
-    .map((attachment) => {
-      const meta = [attachment.mimeType, humanFileSize(attachment.size)]
-        .filter((part) => part.trim().length > 0)
-        .join(", ");
-      return `[${attachment.name}](${attachment.url})${meta ? ` (${meta})` : ""}`;
-    });
+    .map((attachment) => formatAttachmentLink(attachment));
 }
 
 function renderCommentsSection(
@@ -741,6 +751,20 @@ function renderCommentsSection(
   ];
 }
 
+function employeeLinkForTable(
+  employeeName: string,
+  employeeRef: string | null,
+  employeePathsByRef: ReadonlyMap<string, string>,
+): string {
+  if (employeeRef) {
+    const employeePath = employeePathsByRef.get(employeeRef);
+    if (employeePath) {
+      return `[[${withoutExtension(employeePath)}]]`;
+    }
+  }
+  return employeeName;
+}
+
 function fieldLabel(field: string): string {
   switch (field) {
     case "status": return "Status";
@@ -771,7 +795,7 @@ function renderIssueHistorySection(
     const field = fieldLabel(entry.field);
     const from = entry.fromValue ?? "—";
     const to = entry.toValue ?? "—";
-    const by = employeeLink(entry.changedBy, entry.changedByPersonRef, employeePathsByRef);
+    const by = employeeLinkForTable(entry.changedBy, entry.changedByPersonRef, employeePathsByRef);
     lines.push(`| ${date} | ${field} | ${from} | ${to} | ${by} |`);
   }
 
@@ -1365,10 +1389,7 @@ function renderRichComponentNote(
   if (component.attachments.length > 0) {
     lines.push("---", "", "## 📎 Attachments", "");
     for (const att of component.attachments) {
-      const meta = [att.mimeType, humanFileSize(att.size)]
-        .filter((p) => p.trim().length > 0)
-        .join(", ");
-      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+      lines.push(`- ${formatAttachmentLink(att)}`);
     }
     lines.push("");
   }
@@ -1594,10 +1615,7 @@ function renderRichIssueNote(
   if (issue.attachments.length > 0) {
     lines.push(L2(""), L2("---"), L2(""), L2("### 📎 Attachments"), L2(""));
     for (const att of issue.attachments) {
-      const meta = [att.mimeType, humanFileSize(att.size)]
-        .filter((p) => p.trim().length > 0)
-        .join(", ");
-      lines.push(L2(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`));
+      lines.push(L2(`- ${formatAttachmentLink(att)}`));
     }
   }
 
@@ -1655,7 +1673,7 @@ function renderRichIssueNote(
       const field = fieldLabel(entry.field);
       const from = entry.fromValue ?? "—";
       const to = entry.toValue ?? "—";
-      const by = employeeLink(entry.changedBy, entry.changedByPersonRef, opts.employeePathsByRef);
+      const by = employeeLinkForTable(entry.changedBy, entry.changedByPersonRef, opts.employeePathsByRef);
       lines.push(L2(`| ${date} | ${field} | ${from} | ${to} | ${by} |`));
     }
   }
@@ -1681,10 +1699,7 @@ function renderRichIssueNote(
       if (comment.attachments.length > 0) {
         lines.push(L2(""));
         for (const att of comment.attachments) {
-          const meta = [att.mimeType, humanFileSize(att.size)]
-            .filter((p) => p.trim().length > 0)
-            .join(", ");
-          lines.push(L2(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`));
+          lines.push(L2(`- ${formatAttachmentLink(att)}`));
         }
       }
     }
@@ -1770,10 +1785,7 @@ function renderCommentsRich(
 
     if (comment.attachments.length > 0) {
       for (const att of comment.attachments) {
-        const meta = [att.mimeType, humanFileSize(att.size)]
-          .filter((p) => p.trim().length > 0)
-          .join(", ");
-        blocks.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+        blocks.push(`- ${formatAttachmentLink(att)}`);
       }
       blocks.push("");
     }
@@ -2057,10 +2069,7 @@ function renderRichMilestoneNote(
   if (milestone.attachments.length > 0) {
     lines.push("---", "", "## 📎 Attachments", "");
     for (const att of milestone.attachments) {
-      const meta = [att.mimeType, humanFileSize(att.size)]
-        .filter((p) => p.trim().length > 0)
-        .join(", ");
-      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+      lines.push(`- ${formatAttachmentLink(att)}`);
     }
     lines.push("");
   }
@@ -2250,10 +2259,7 @@ function renderRichIssueTemplateNote(
   if (template.attachments.length > 0) {
     lines.push("---", "", "## 📎 Attachments", "");
     for (const att of template.attachments) {
-      const meta = [att.mimeType, humanFileSize(att.size)]
-        .filter((p) => p.trim().length > 0)
-        .join(", ");
-      lines.push(`- [${att.name}](${att.url})${meta ? ` _(${meta})_` : ""}`);
+      lines.push(`- ${formatAttachmentLink(att)}`);
     }
     lines.push("");
   }
@@ -2889,6 +2895,87 @@ async function renameFileIfNeeded(
   await app.fileManager.renameFile(currentFile, targetPath);
 }
 
+const ATTACHMENT_DOWNLOAD_CONCURRENCY = 4;
+
+function attachmentLocalPath(rootFolder: string, attachment: HulyAttachment): string {
+  const shortId = attachment.id.slice(-8);
+  const safeName = sanitizePathPart(attachment.name, "file");
+  return joinVaultPath(rootFolder, "_attachments", `${shortId}-${safeName}`);
+}
+
+async function downloadAttachmentToVault(
+  vault: Vault,
+  localPath: string,
+  remoteUrl: string,
+  expectedSize: number,
+  token: string,
+): Promise<boolean> {
+  const existing = vault.getAbstractFileByPath(localPath);
+  if (existing instanceof TFile && existing.stat.size === expectedSize) {
+    return true;
+  }
+
+  try {
+    const response = await requestUrl({
+      url: remoteUrl,
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (response.status !== 200) {
+      return false;
+    }
+    const data = response.arrayBuffer;
+    if (existing instanceof TFile) {
+      await vault.modifyBinary(existing, data);
+    } else {
+      await vault.createBinary(localPath, data);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function collectAllAttachments(
+  issues: HulyIssue[],
+  components: HulyComponent[],
+  milestones: HulyMilestone[],
+  issueTemplates: HulyIssueTemplate[],
+): HulyAttachment[] {
+  const seen = new Set<string>();
+  const result: HulyAttachment[] = [];
+  const add = (att: HulyAttachment) => {
+    if (!seen.has(att.id)) {
+      seen.add(att.id);
+      result.push(att);
+    }
+  };
+  for (const issue of issues) {
+    issue.attachments.forEach(add);
+    for (const comment of issue.comments) {
+      comment.attachments.forEach(add);
+    }
+  }
+  for (const component of components) {
+    component.attachments.forEach(add);
+    for (const comment of component.comments) {
+      comment.attachments.forEach(add);
+    }
+  }
+  for (const milestone of milestones) {
+    milestone.attachments.forEach(add);
+    for (const comment of milestone.comments) {
+      comment.attachments.forEach(add);
+    }
+  }
+  for (const template of issueTemplates) {
+    template.attachments.forEach(add);
+    for (const comment of template.comments) {
+      comment.attachments.forEach(add);
+    }
+  }
+  return result;
+}
+
 export class VaultSyncService {
   constructor(private readonly app: App) {}
 
@@ -2901,6 +2988,7 @@ export class VaultSyncService {
     milestones: HulyMilestone[],
     issueTemplates: HulyIssueTemplate[],
     _options: SyncOptions,
+    filesToken: string,
     onProgress?: (progress: SyncProgress) => void,
   ): Promise<SyncStats> {
     const rootFolder = settings.targetFolder.trim() || "huly";
@@ -2921,6 +3009,27 @@ export class VaultSyncService {
     };
     await ensureFolder(this.app.vault, rootFolder);
     await ensureFolder(this.app.vault, employeeFolderPath(rootFolder));
+
+    const attachmentsFolder = joinVaultPath(rootFolder, "_attachments");
+    await ensureFolder(this.app.vault, attachmentsFolder);
+
+    const allAttachments = collectAllAttachments(issues, components, milestones, issueTemplates);
+    const localPathByAttId = new Map<string, string>();
+
+    await mapLimit(allAttachments, ATTACHMENT_DOWNLOAD_CONCURRENCY, async (att) => {
+      const localPath = attachmentLocalPath(rootFolder, att);
+      const ok = await downloadAttachmentToVault(
+        this.app.vault,
+        localPath,
+        att.url,
+        att.size,
+        filesToken,
+      );
+      if (ok) {
+        localPathByAttId.set(att.id, localPath);
+        att.url = localPath;
+      }
+    });
 
     if (renderOpts.noteStyle === "rich" && renderOpts.useMetaBind) {
       await writeTemplateFiles(this.app.vault, rootFolder);
