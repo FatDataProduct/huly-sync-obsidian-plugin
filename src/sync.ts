@@ -607,25 +607,66 @@ function findExistingProjectNote(
   return candidates.find((file) => file.path !== targetPath) ?? null;
 }
 
-function findExistingIssueNote(
+async function collectIssueNotesForIssue(
   vault: Vault,
   tasksFolder: string,
+  issue: HulyIssue,
+  candidateStems: Set<string>,
+): Promise<TFile[]> {
+  const matches: TFile[] = [];
+  for (const file of vault.getMarkdownFiles()) {
+    if (!isDirectChildMarkdownFile(file.path, tasksFolder)) {
+      continue;
+    }
+    const content = await vault.cachedRead(file);
+    const fileIssueId = frontmatterScalar(content, "huly_issue_id");
+    if (fileIssueId) {
+      if (fileIssueId === issue.id) {
+        matches.push(file);
+      }
+      continue;
+    }
+    // Legacy-заметки без huly_issue_id матчим по имени файла.
+    if (candidateStems.has(fileStem(file.path))) {
+      matches.push(file);
+    }
+  }
+  return matches;
+}
+
+// Huly разрешает переименовывать задачи, а имя .md строится из заголовка. Раньше при
+// переименовании плагин искал старый файл по ТЕКУЩЕМУ имени, не находил его и создавал
+// дубликат — одна задача оказывалась в нескольких .md с разным списанным временем, из-за
+// чего дашборды двоили время/счётчики. Теперь матчим заметки по неизменяемому
+// huly_issue_id и сводим их к единственному файлу targetPath, удаляя лишние копии.
+async function reconcileIssueNotes(
+  app: App,
+  tasksFolder: string,
+  issue: HulyIssue,
   candidateStems: Set<string>,
   targetPath: string,
-): TFile | null {
-  const candidates = vault
-    .getMarkdownFiles()
-    .filter((file) => isDirectChildMarkdownFile(file.path, tasksFolder))
-    .filter((file) => candidateStems.has(fileStem(file.path)))
-    .sort((left, right) => {
-      const leftStem = fileStem(left.path);
-      const rightStem = fileStem(right.path);
-      const leftScore = leftStem === fileStem(targetPath) ? 0 : 1;
-      const rightScore = rightStem === fileStem(targetPath) ? 0 : 1;
-      return leftScore - rightScore || compareStrings(leftStem, rightStem);
-    });
+): Promise<void> {
+  const vault = app.vault;
+  const notes = await collectIssueNotesForIssue(vault, tasksFolder, issue, candidateStems);
+  if (notes.length === 0) {
+    return;
+  }
 
-  return candidates.find((file) => file.path !== targetPath) ?? null;
+  const keeper =
+    notes.find((file) => file.path === targetPath) ??
+    notes.slice().sort((left, right) => right.stat.mtime - left.stat.mtime)[0] ??
+    null;
+
+  for (const file of notes) {
+    if (keeper && file.path === keeper.path) {
+      continue;
+    }
+    await vault.delete(file);
+  }
+
+  if (keeper && keeper.path !== targetPath) {
+    await renameFileIfNeeded(app, keeper, targetPath);
+  }
 }
 
 function findExistingMilestoneNote(
@@ -822,6 +863,23 @@ type EmployeeTimeFrontmatterEntry = {
   reported_time_display: string;
 };
 
+type TimeReportFrontmatterEntry = {
+  report_id: string;
+  employee_name: string;
+  employee_slug: string;
+  employee_ref: string | null;
+  employee_person_uuid: string | null;
+  employee_note: string | null;
+  employee_link: string | null;
+  report_date: string | null;
+  report_date_ms: number | null;
+  reported_time_ms: number;
+  reported_time_hours: number;
+  reported_time_minutes: number;
+  reported_time_display: string;
+  description: string;
+};
+
 function summarizeTimeReports(reports: HulyTimeReport[]): EmployeeTimeSummary[] {
   const totals = new Map<string, EmployeeTimeSummary>();
   for (const report of reports) {
@@ -887,6 +945,33 @@ function timeSummaryFrontmatter(
     reported_time_minutes: durationToMinutes(item.total),
     reported_time_display: formatDurationShort(item.total),
   }));
+}
+
+function timeReportFrontmatter(
+  reports: HulyTimeReport[],
+  employeePathsByRef: ReadonlyMap<string, string>,
+): TimeReportFrontmatterEntry[] {
+  return [...reports]
+    .sort((left, right) => (right.date ?? 0) - (left.date ?? 0) || compareStrings(left.employeeName, right.employeeName))
+    .map((report) => ({
+      report_id: report.id,
+      employee_name: report.employeeName,
+      employee_slug: slugify(report.employeeName),
+      employee_ref: report.employeeRef,
+      employee_person_uuid: report.employeePersonUuid,
+      employee_note: report.employeeRef ? withoutExtension(employeePathsByRef.get(report.employeeRef) ?? "") || null : null,
+      employee_link:
+        report.employeeRef && employeePathsByRef.get(report.employeeRef)
+          ? wikilink(employeePathsByRef.get(report.employeeRef) ?? "", report.employeeName)
+          : null,
+      report_date: toIsoDate(report.date),
+      report_date_ms: report.date,
+      reported_time_ms: report.value,
+      reported_time_hours: durationToHours(report.value),
+      reported_time_minutes: durationToMinutes(report.value),
+      reported_time_display: formatDurationShort(report.value),
+      description: report.description.trim(),
+    }));
 }
 
 function sumIssueDurations(issues: HulyIssue[]) {
@@ -1442,6 +1527,10 @@ function renderRichIssueNote(
     reportSummary,
     opts.employeePathsByRef,
   );
+  const timeEntryFrontmatterRows = timeReportFrontmatter(
+    issue.timeReports,
+    opts.employeePathsByRef,
+  );
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
 
@@ -1549,6 +1638,7 @@ function renderRichIssueNote(
       reportSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
     yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
+    yamlObjectList("huly_time_entries", timeEntryFrontmatterRows),
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
     yamlList("huly_labels", sortedLabels),
@@ -1567,6 +1657,9 @@ function renderRichIssueNote(
     yamlScalar("huly_component_link", componentDisplay),
     yamlScalar("huly_milestone_display", milestoneDisplay),
     yamlScalar("huly_issue_template_display", issueTemplateDisplay),
+    yamlList("huly_parent_issue_ids", issue.parents.map((parent) => parent.parentId)),
+    yamlList("huly_parent_identifiers", issue.parents.map((parent) => parent.identifier)),
+    yamlList("huly_parent_titles", issue.parents.map((parent) => parent.title)),
     yamlScalar("huly_parent_link", parentLinkMd),
     yamlList("tags", tags),
     "---",
@@ -2300,6 +2393,10 @@ function renderIssueNote(
     reportSummary,
     opts.employeePathsByRef,
   );
+  const timeEntryFrontmatterRows = timeReportFrontmatter(
+    issue.timeReports,
+    opts.employeePathsByRef,
+  );
   const dueDays = dueInDays(issue.dueDate);
   const progressPct = timeProgressPct(issue.estimation, issue.reportedTime);
   const tags = unique([
@@ -2403,6 +2500,7 @@ function renderIssueNote(
       reportSummary.map((item) => `${item.employeeName}: ${formatDurationShort(item.total)}`),
     ),
     yamlObjectList("huly_time_by_employee", timeSummaryFrontmatterRows),
+    yamlObjectList("huly_time_entries", timeEntryFrontmatterRows),
     yamlScalar("huly_issue_url", externalIssueUrl),
     yamlScalar("huly_estimation_display", formatDuration(issue.estimation)),
     yamlScalar("huly_reported_display", formatDuration(issue.reportedTime)),
@@ -2410,6 +2508,9 @@ function renderIssueNote(
     yamlScalar("huly_updated_at", toIsoDate(issue.modifiedOn)),
     yamlScalar("huly_is_closed", issue.isClosed),
     yamlList("huly_labels", sortedLabels),
+    yamlList("huly_parent_issue_ids", issue.parents.map((parent) => parent.parentId)),
+    yamlList("huly_parent_identifiers", issue.parents.map((parent) => parent.identifier)),
+    yamlList("huly_parent_titles", issue.parents.map((parent) => parent.title)),
     yamlList("tags", tags),
     "---",
     "",
@@ -3267,14 +3368,11 @@ export class VaultSyncService {
           : null;
         const linksToParents = parentIssueLinks(issue.parents, issuePathsById);
 
-        await renameFileIfNeeded(
+        await reconcileIssueNotes(
           this.app,
-          findExistingIssueNote(
-            this.app.vault,
-            tasksFolder,
-            issueNoteCandidateStems(issue),
-            issuePath,
-          ),
+          tasksFolder,
+          issue,
+          issueNoteCandidateStems(issue),
           issuePath,
         );
 
