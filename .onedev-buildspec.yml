@@ -7,7 +7,6 @@ jobs:
     remoteUrl: https://github.com/FatDataProduct/huly-sync-obsidian-plugin.git
     userName: x-access-token
     passwordSecret: github-access-token
-    syncToChildProject: false
     refs: refs/heads/* refs/tags/*
     withLfs: false
     force: false
@@ -17,5 +16,28 @@ jobs:
     cronExpression: 0 0 */4 * * ?
   retryCondition: never
   maxRetries: 3
+  retryDelay: 30
+  timeout: 3600
+- name: checks
+  jobExecutor: fdp-docker
+  steps:
+  - !CheckoutStep
+    name: checkout
+    cloneCredential: !DefaultCredential {}
+    withLfs: false
+    withSubmodules: false
+    condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+  - !CommandStep
+    name: run-checks
+    image: node:20-alpine
+    commands:
+    - set -eu
+    - export HOME=/tmp
+    - export npm_config_cache=/tmp/npm-cache
+    - npm ci
+    - npm run build
+    condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+  retryCondition: never
+  maxRetries: 1
   retryDelay: 30
   timeout: 3600
