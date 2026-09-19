@@ -15,6 +15,24 @@ jobs:
   maxRetries: 3
   retryDelay: 30
   timeout: 3600
+- name: Push to GitHub
+  steps:
+  - !PushRepository
+    name: push
+    remoteUrl: https://github.com/FatDataProduct/huly-sync-obsidian-plugin.git
+    userName: x-access-token
+    passwordSecret: github-access-token
+    force: false
+    condition: ALL_PREVIOUS_STEPS_WERE_SUCCESSFUL
+  triggers:
+  - !BranchUpdateTrigger
+    branches: '*'
+  - !TagCreateTrigger
+    tags: '*'
+  retryCondition: never
+  maxRetries: 3
+  retryDelay: 30
+  timeout: 3600
 - name: checks
   jobExecutor: fdp-docker
   steps:
